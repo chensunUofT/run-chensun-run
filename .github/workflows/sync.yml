@@ -1,0 +1,39 @@
+name: Incremental Google Health sync
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 10 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: google-health-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: vars.RUNWISE_SYNC_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    env:
+      RUNWISE_MODE: personal
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      RUNWISE_OWNER_GOOGLE_EMAILS: ${{ secrets.RUNWISE_OWNER_GOOGLE_EMAILS }}
+      RUNWISE_FRONTEND_URL: ${{ vars.RUNWISE_FRONTEND_URL }}
+      RUNWISE_CORS_ORIGINS: ${{ vars.RUNWISE_FRONTEND_URL }}
+      RUNWISE_PUBLIC_BASE_URL: ${{ vars.RUNWISE_PUBLIC_BASE_URL }}
+      RUNWISE_ALLOWED_HOSTS: ${{ vars.RUNWISE_ALLOWED_HOSTS }}
+      RUNWISE_TOKEN_ENCRYPTION_KEY: ${{ secrets.RUNWISE_TOKEN_ENCRYPTION_KEY }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      RUNWISE_GOOGLE_REDIRECT_URI: ${{ vars.RUNWISE_GOOGLE_REDIRECT_URI }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - name: Synchronize connected accounts
+        run: python -m app.sync_job
+        working-directory: backend
