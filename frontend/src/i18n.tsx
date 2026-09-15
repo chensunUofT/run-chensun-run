@@ -1,13 +1,27 @@
+import shareImageEn from './locales/share-image.en.json'
+import shareImageZh from './locales/share-image.zh.json'
+import statsPeriodEn from './locales/stats-period.en.json'
+import statsPeriodZh from './locales/stats-period.zh.json'
+import shoeBreakdownEn from './locales/shoe-breakdown.en.json'
+import shoeBreakdownZh from './locales/shoe-breakdown.zh.json'
+import fitnessEn from './locales/fitness.en.json'
+import fitnessZh from './locales/fitness.zh.json'
+import libraryEn from './locales/library.en.json'
+import libraryZh from './locales/library.zh.json'
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import en from './locales/en.json'
 import zh from './locales/zh.json'
+import trainingEn from './locales/training.en.json'
+import trainingZh from './locales/training.zh.json'
+import telemetryEn from './locales/telemetry.en.json'
+import telemetryZh from './locales/telemetry.zh.json'
 
 export type Locale = 'en' | 'zh'
 interface MessageTree {
   [key: string]: string | MessageTree
 }
 
-const messages: Record<Locale, MessageTree> = { en, zh }
+const messages: Record<Locale, MessageTree> = { en: {...en,...trainingEn,...telemetryEn,...libraryEn,...shareImageEn,...statsPeriodEn,...shoeBreakdownEn,...fitnessEn}, zh: {...zh,...trainingZh,...telemetryZh,...libraryZh,...shareImageZh,...statsPeriodZh,...shoeBreakdownZh,...fitnessZh} }
 const LOCALE_STORAGE_KEY = 'runwise-locale'
 
 function getInitialLocale(): Locale {

@@ -111,7 +111,7 @@ An exercise data point contains the fields relevant to Runwise:
     "metricsSummary": {
       "distanceMillimeters": 5000000.0,
       "averageHeartRateBeatsPerMinute": "148",
-      "averagePaceSecondsPerMeter": 360.0
+      "averagePaceSecondsPerMeter": 0.36
     },
     "exerciseMetadata": {"hasGps": true},
     "exerciseEvents": [],
@@ -137,8 +137,39 @@ Google returns raw TCX XML when `alt=media` is present. The client preserves
 the raw bytes and parses `Trackpoint` elements into timestamp, latitude,
 longitude, altitude, and cumulative distance fields. The method also accepts
 the JSON `tcxData` envelope documented for clients that omit media mode, but
-Runwise always requests media mode. A route is not inferred from heart-rate or
-distance records when export is unavailable.
+Runwise always requests media mode. When TCX contains no points, matching-source
+distance intervals and heart-rate samples can supply coarse telemetry. This
+fallback never fabricates GPS coordinates or altitude.
+
+## Query-window compatibility and workout hierarchy
+
+The 2026-09-15 real-account audit returned the same exercise IDs in a broad
+history scan and in monthly queries. The broad response
+classified many records as generic `WORKOUT`, whereas monthly responses supplied
+their `RUNNING` type and richer metrics. This is observed query-range-dependent
+provider behavior, not proof of a particular API version migration. Runwise now
+queries calendar-month windows, paginates each window, and deduplicates by the
+provider ID. Pure `WALKING` sessions are excluded. Generic workouts require
+affirmative running evidence, such as a Running TCX activity.
+
+The REST resource is an `exercise` session. `exerciseType` is its activity
+classification; Runwise's `run` is the application's filtered representation.
+TCX `Activity` and `Lap` are XML containers, not guaranteed custom-workout
+Run/Walk intervals. The official REST schema provides `splitSummaries` with
+distance, duration, or manual boundaries and `exerciseEvents` for pauses.
+It does not promise the phone app's entire custom-workout hierarchy.
+
+The checked real TCX exports contained either one Activity and one Lap,
+or one Activity without laps or points. Thus these exports did not
+provide the phone-visible custom Run/Walk sequence. Retained provider splits are
+kept distinct from algorithmically inferred training segments.
+
+Distance telemetry records are interval increments, not cumulative odometer
+readings. Fitbit and Health Connect can overlap for the same period. The
+fallback selects one matching platform/device source, removes duplicates,
+rejects ambiguous overlaps, and records provenance and missing intervals.
+It cannot resolve short traffic-light stops from minute-level measurements.
+The app conservatively retains unknown time and labels coarse estimates.
 
 ## Pagination, history, and failures
 

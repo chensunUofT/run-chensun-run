@@ -2,17 +2,203 @@
   {
     "id": "asics-gel-nimbus-27-1012b753-021",
     "brand": "ASICS",
-    "name": "GEL-NIMBUS 27 (women, Piedmont Grey/Cream)",
+    "name": "GEL-NIMBUS 27",
     "image_url": "https://images.asics.com/is/image/asics/1012B753_021_SL_LT_GLB?%24sfcc-product%24=&fmt=jpg&hei=512&wid=683",
     "source_url": "https://www.asics.com/sg/en-sg/gel-nimbus-27/p/1012B753-021.html",
-    "attribution": "Product image: ASICS. Linked from the original product listing."
+    "attribution": "Product image: ASICS. Linked from the original product listing.",
+    "colorway": "Piedmont Grey/Cream"
   },
   {
     "id": "brooks-ghost-17-white-wide",
     "brand": "Brooks",
-    "name": "Ghost 17 (men, White, Wide)",
+    "name": "Ghost 17",
     "image_url": "https://ecimg.cafe24img.com/pg90b05313110010/brooksrunning/web/product/extra/big/20250414/1b73a669a44fe264eb2a06e10c1c0bc6.png",
     "source_url": "https://brooksrunning.co.kr/product/%EB%82%A8%EC%84%B1-%EA%B3%A0%EC%8A%A4%ED%8A%B8-17%ED%99%94%EC%9D%B4%ED%8A%B8-wide/527/",
-    "attribution": "Product image: Brooks Running Korea. Linked from the original product listing."
+    "attribution": "Product image: Brooks Running Korea. Linked from the original product listing.",
+    "colorway": "White"
+  },
+  {
+    "id": "catalog-nike-vomero-plus",
+    "brand": "Nike",
+    "name": "Vomero Plus",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-nike-vomero-18",
+    "brand": "Nike",
+    "name": "Vomero 18",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-nike-vaporfly-4",
+    "brand": "Nike",
+    "name": "Vaporfly 4",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-nike-pegasus-41",
+    "brand": "Nike",
+    "name": "Pegasus 41",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-nike-pegasus-42",
+    "brand": "Nike",
+    "name": "Pegasus 42",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-nike-alphafly-3",
+    "brand": "Nike",
+    "name": "Alphafly 3",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-nike-structure-26",
+    "brand": "Nike",
+    "name": "Structure 26",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-nike-streakfly-2",
+    "brand": "Nike",
+    "name": "Streakfly 2",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-nike-structure-plus",
+    "brand": "Nike",
+    "name": "Structure Plus",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-asics-novablast-5",
+    "brand": "ASICS",
+    "name": "Novablast 5",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-asics-novablast-6",
+    "brand": "ASICS",
+    "name": "Novablast 6",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-hoka-clifton-10",
+    "brand": "HOKA",
+    "name": "Clifton 10",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-hoka-bondi-9",
+    "brand": "HOKA",
+    "name": "Bondi 9",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-adidas-adizero-evo-sl",
+    "brand": "adidas",
+    "name": "Adizero EVO SL",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-adidas-adizero-adios-pro-4",
+    "brand": "adidas",
+    "name": "Adizero Adios Pro 4",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-new-balance-fresh-foam-x-more-v6",
+    "brand": "New Balance",
+    "name": "Fresh Foam X More v6",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-new-balance-fuelcell-supercomp-trainer-v3",
+    "brand": "New Balance",
+    "name": "FuelCell SuperComp Trainer v3",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-new-balance-fresh-foam-680-v9",
+    "brand": "New Balance",
+    "name": "Fresh Foam 680 v9",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-new-balance-1080-v15",
+    "brand": "New Balance",
+    "name": "1080 v15",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-saucony-endorphin-speed-5",
+    "brand": "Saucony",
+    "name": "Endorphin Speed 5",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-saucony-hurricane-25",
+    "brand": "Saucony",
+    "name": "Hurricane 25",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-saucony-endorphin-pro-4",
+    "brand": "Saucony",
+    "name": "Endorphin Pro 4",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
+  },
+  {
+    "id": "catalog-brooks-ghost-max-2",
+    "brand": "Brooks",
+    "name": "Ghost Max 2",
+    "image_url": null,
+    "source_url": "https://runrepeat.com/catalog/running-shoes",
+    "attribution": "Model name verified against RunRepeat catalog. No review text or lab photographs copied."
   }
 ]

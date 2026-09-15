@@ -1,0 +1,35 @@
+{
+  "telemetry": {
+    "eyebrow": "Activity detail",
+    "title": "Run telemetry",
+    "subtitle": "Distance aligned streams from this run. Pace, heart rate, and elevation share one readable view.",
+    "pace": "Pace",
+    "heartRate": "Heart rate",
+    "elevation": "Elevation",
+    "units": {
+      "perKm": "/km",
+      "bpm": "bpm",
+      "meters": "m",
+      "km": "km"
+    },
+    "samples": "{count} plotted points",
+    "sourceSamples": "{count} source samples",
+    "customLaps": "{count} provider segments",
+    "scrub": "Inspect distance",
+    "startInspection": "Move across the chart to inspect a point",
+    "legend": "Run curve legend",
+    "toggleSeries": "Toggle {metric} series",
+    "distanceAxis": "Distance · km",
+    "ariaCombinedChart": "Pace, heart rate, and elevation over distance",
+    "noDistance": "Distance values are unavailable for this telemetry.",
+    "noSeriesAny": "No chartable telemetry values are available",
+    "measured": "Measured stream",
+    "gap": "Elapsed gap over 30 seconds",
+    "customLapLegend": "Provider segment",
+    "noData": "This run has no timed telemetry samples to plot.",
+    "noSeries": "No {metric} data is available",
+    "noValue": "No value",
+    "ariaChart": "{metric} over distance",
+    "noCustomSegments": "The provider returned no custom workout intervals. Distance laps are listed separately below."
+  }
+}

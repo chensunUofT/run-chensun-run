@@ -1,0 +1,31 @@
+{
+  "library": {
+    "searchLabel": "Search runs",
+    "searchPlaceholder": "Search runs, notes, type, or shoe",
+    "filterLabel": "Filter by type",
+    "allTypes": "All types",
+    "run": "Run",
+    "distancePace": "Distance / pace",
+    "runType": "Run type",
+    "shoe": "Shoe",
+    "selectRun": "Select {title}",
+    "selectionHint": "Select runs to edit together",
+    "selectedCount": "{count} selected",
+    "selectAllFiltered": "Select all filtered",
+    "clearVisible": "Clear visible",
+    "clearSelection": "Clear selection",
+    "bulkActions": "Bulk edit selected runs",
+    "bulkSummary": "Change the type or shoe for these records.",
+    "keepUnchanged": "Keep unchanged",
+    "noShoe": "No shoe",
+    "applyToSelected": "Apply changes",
+    "applying": "Applying…",
+    "applyError": "The selected runs could not be updated. Try again.",
+    "updated": "Updated {count} runs.",
+    "selectionLimit": "Selection is capped at {count} runs. Select all filtered chooses the first {count}.",
+    "noRuns": "No run records yet",
+    "emptyCopy": "Your real activities will appear here.",
+    "noMatch": "No runs match these filters",
+    "noMatchCopy": "Try another keyword or run type."
+  }
+}

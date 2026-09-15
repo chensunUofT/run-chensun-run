@@ -1,0 +1,31 @@
+{
+  "library": {
+    "searchLabel": "搜索跑步记录",
+    "searchPlaceholder": "搜索名称、备注、类型或跑鞋",
+    "filterLabel": "按类型筛选",
+    "allTypes": "全部类型",
+    "run": "跑步",
+    "distancePace": "距离 / 配速",
+    "runType": "跑步类型",
+    "shoe": "跑鞋",
+    "selectRun": "选择 {title}",
+    "selectionHint": "选择记录后批量编辑",
+    "selectedCount": "已选择 {count} 条",
+    "selectAllFiltered": "全选筛选结果",
+    "clearVisible": "清除当前选择",
+    "clearSelection": "清除选择",
+    "bulkActions": "批量编辑已选记录",
+    "bulkSummary": "修改这些记录的类型或跑鞋。",
+    "keepUnchanged": "保持不变",
+    "noShoe": "不关联跑鞋",
+    "applyToSelected": "应用修改",
+    "applying": "正在应用…",
+    "applyError": "所选记录更新失败，请重试。",
+    "updated": "已更新 {count} 条记录。",
+    "selectionLimit": "最多可选择 {count} 条记录。全选筛选结果会选择前 {count} 条。",
+    "noRuns": "暂无跑步记录",
+    "emptyCopy": "你的真实跑步记录会显示在这里。",
+    "noMatch": "没有符合筛选条件的记录",
+    "noMatchCopy": "请尝试其他关键词或跑步类型。"
+  }
+}

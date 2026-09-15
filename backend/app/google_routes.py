@@ -9,6 +9,7 @@ import hmac
 import importlib
 import json
 import math
+import re
 import secrets
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
@@ -257,20 +258,258 @@ def _google_client(settings: Settings, connection: GoogleConnection, now: dateti
     return client_class(access), access
 
 
-def _session_to_run(session: dict[str, Any]) -> dict[str, Any] | None:
+_RUNNING_ACTIVITY_TYPES = frozenset(
+    {
+        "RUN",
+        "RUNNING",
+        "JOG",
+        "JOGGING",
+        "TREADMILL",
+        "TREADMILL_RUN",
+        "TRAIL_RUN",
+        "INCLINE_RUN",
+        "DISTANCE_RUN",
+    }
+)
+_GENERIC_EXERCISE_TITLES = frozenset({"activity", "exercise", "workout"})
+
+
+def _canonical_activity_type(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return re.sub(r"[^A-Z0-9]+", "_", value.strip().upper()).strip("_") or None
+
+
+def _is_running_activity_type(value: Any) -> bool:
+    canonical = _canonical_activity_type(value)
+    if canonical is None:
+        return False
+    if canonical in _RUNNING_ACTIVITY_TYPES:
+        return True
+    # The enum is explicitly extensible. Accept future run/jog variants while
+    # keeping WALKING, BIKING, and generic WORKOUT distinct.
+    tokens = set(canonical.split("_"))
+    return bool(tokens & {"RUN", "RUNNING", "JOG", "JOGGING"}) and "WALK" not in tokens
+
+
+def _has_running_label(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    label = value.strip().casefold()
+    if label in {"google health run", "google health running", "google health treadmill"}:
+        return False
+    return bool(re.search(r"\b(?:run|running|jog|jogging|treadmill)\b", value, flags=re.IGNORECASE))
+
+
+def _route_sports(route: dict[str, Any] | None) -> set[str]:
+    if not isinstance(route, dict):
+        return set()
+    sports: set[str] = set()
+    values = route.get("activity_sports")
+    if isinstance(values, list):
+        sports.update(canonical for value in values if (canonical := _canonical_activity_type(value)))
+    activities = route.get("activities")
+    if isinstance(activities, list):
+        for activity in activities:
+            if isinstance(activity, dict):
+                canonical = _canonical_activity_type(activity.get("sport"))
+                if canonical:
+                    sports.add(canonical)
+    canonical = _canonical_activity_type(route.get("sport"))
+    if canonical:
+        sports.add(canonical)
+    return sports
+
+
+def _route_is_running(route: dict[str, Any] | None) -> bool:
+    sports = _route_sports(route)
+    return any(_is_running_activity_type(sport) or "RUN" in sport for sport in sports)
+
+
+def _session_component_values(session: dict[str, Any]) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+    for key in ("children", "childExercises", "activities", "activitySegments", "segments", "laps"):
+        collection = session.get(key)
+        if not isinstance(collection, list):
+            continue
+        values.extend(item for item in collection if isinstance(item, dict))
+    return values
+
+
+def _session_has_running_activity(session: dict[str, Any], route: dict[str, Any] | None) -> bool:
+    activity_type = session.get("activity_type")
+    if _is_running_activity_type(activity_type):
+        return True
+    canonical = _canonical_activity_type(activity_type)
+    # An explicit non-running provider enum is authoritative. A route's TCX
+    # sport is a fallback for generic/custom summaries, not permission to
+    # reinterpret an exercise explicitly reported as WALKING or BIKING.
+    if canonical not in {None, "WORKOUT", "EXERCISE", "UNKNOWN"}:
+        return False
+    if _route_is_running(route):
+        return True
+    components = _session_component_values(session)
+    if any(_is_running_activity_type(component.get("activity_type")) for component in components):
+        return True
+    # A provider may use WORKOUT for a custom activity while retaining the
+    # human name (for example "Distance run"). Only generic/unknown parent
+    # types use the name fallback; explicit WALKING/BIKING remain excluded.
+    if canonical in {None, "WORKOUT", "EXERCISE", "UNKNOWN"}:
+        return _has_running_label(session.get("title")) or _has_running_label(session.get("display_name"))
+    return False
+
+
+def _route_distance_m(route: dict[str, Any] | None) -> float | None:
+    if not isinstance(route, dict):
+        return None
+    for key in ("total_distance_m", "distance_m"):
+        value = route.get(key)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number) and number > 0:
+            return number
+    laps = route.get("laps")
+    if isinstance(laps, list):
+        values = []
+        for lap in laps:
+            if not isinstance(lap, dict):
+                continue
+            try:
+                number = float(lap.get("distance_m"))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number) and number > 0:
+                values.append(number)
+        if values:
+            return sum(values)
+    points = route.get("points")
+    if isinstance(points, list):
+        values = []
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            try:
+                number = float(point.get("distance_m"))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number) and number >= 0:
+                values.append(number)
+        if values and max(values) > 0:
+            return max(values)
+    return None
+
+
+def _route_elapsed_seconds(route: dict[str, Any] | None) -> float | None:
+    if not isinstance(route, dict):
+        return None
+    try:
+        number = float(route.get("elapsed_seconds"))
+    except (TypeError, ValueError):
+        number = math.nan
+    if math.isfinite(number) and number > 0:
+        return number
+    points = route.get("points")
+    times = [_parse_timestamp(point.get("timestamp")) for point in points if isinstance(point, dict)] if isinstance(points, list) else []
+    times = [value for value in times if value is not None]
+    if len(times) >= 2:
+        elapsed = (max(times) - min(times)).total_seconds()
+        return elapsed if math.isfinite(elapsed) and elapsed > 0 else None
+    return None
+
+
+def _session_distance_km(session: dict[str, Any], route: dict[str, Any] | None) -> float | None:
+    for key in ("distance_km",):
+        try:
+            number = float(session.get(key))
+        except (TypeError, ValueError):
+            number = math.nan
+        if math.isfinite(number) and number > 0:
+            return number
+    try:
+        number = float(session.get("distance_m"))
+    except (TypeError, ValueError):
+        number = math.nan
+    if math.isfinite(number) and number > 0:
+        return number / 1000.0
+    component_distances = []
+    for component in _session_component_values(session):
+        try:
+            value = float(component.get("distance_m"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0:
+            component_distances.append(value)
+    if component_distances:
+        return sum(component_distances) / 1000.0
+    route_distance = _route_distance_m(route)
+    return route_distance / 1000.0 if route_distance is not None else None
+
+
+def _session_source_utc_offset_seconds(session: dict[str, Any]) -> int | None:
+    """Read the provider civil offset without changing the stored UTC instant."""
+
+    value = session.get("source_utc_offset_seconds")
+    if value is None:
+        raw = session.get("raw")
+        exercise = raw.get("exercise") if isinstance(raw, dict) else None
+        interval = exercise.get("interval") if isinstance(exercise, dict) else None
+        if isinstance(interval, dict):
+            value = interval.get("startUtcOffset") or interval.get("start_utc_offset")
+    if isinstance(value, str):
+        match = re.fullmatch(r"\s*([+-]?[0-9]+(?:\.[0-9]+)?)s\s*", value)
+        if not match:
+            return None
+        value = match.group(1)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or abs(number) > 86_400:
+        return None
+    return int(round(number))
+
+
+def _session_to_run(session: dict[str, Any], route: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if not _session_has_running_activity(session, route):
+        # Google Health exposes many exercise types through the same endpoint.
+        # Runwise's run table cannot represent walking, cycling, strength, or
+        # unknown activities without misclassifying them as runs.
+        return None
     started = session.get("started_at")
-    distance = session.get("distance_km")
+    distance = _session_distance_km(session, route)
     duration = session.get("duration_seconds")
     if not isinstance(started, str) or not started.strip():
         return None
     try:
         distance_value = float(distance)
-        duration_value = int(round(float(duration))) if duration is not None else 0
     except (TypeError, ValueError):
         return None
+    try:
+        duration_value = int(round(float(duration))) if duration is not None else 0
+    except (TypeError, ValueError, OverflowError):
+        duration_value = 0
+    if not math.isfinite(distance_value):
+        return None
+    if duration_value <= 0:
+        route_duration = _route_elapsed_seconds(route)
+        if route_duration is not None:
+            duration_value = int(round(route_duration))
     if distance_value <= 0 or duration_value <= 0:
         return None
-    title = str(session.get("title") or session.get("display_name") or "Google Health run").strip()[:120]
+    title = str(session.get("title") or session.get("display_name") or "Google Health run").strip()
+    if (
+        _route_is_running(route)
+        and _canonical_activity_type(session.get("activity_type")) in {"WORKOUT", "EXERCISE", "UNKNOWN", None}
+        and title.casefold() in _GENERIC_EXERCISE_TITLES
+    ):
+        # Fitbit-origin custom runs have been observed as WORKOUT/"Workout"
+        # summaries while TCX identifies the Activity as Running. Keep a
+        # useful stable title for the app while preserving the raw provider
+        # display name in the normalized session.
+        title = "Distance run"
+    title = title[:120]
     average_hr = session.get("avg_hr")
     if isinstance(average_hr, float) and average_hr.is_integer():
         average_hr = int(average_hr)
@@ -281,7 +520,11 @@ def _session_to_run(session: dict[str, Any]) -> dict[str, Any] | None:
         moving_value = float(active_duration) if active_duration is not None else None
     except (TypeError, ValueError):
         moving_value = None
-    if moving_value is not None and (moving_value < 0 or moving_value > duration_value):
+    try:
+        duration_bound = float(duration) if duration is not None else float(duration_value)
+    except (TypeError, ValueError):
+        duration_bound = float(duration_value)
+    if moving_value is not None and (moving_value < 0 or moving_value > duration_bound + 1e-6):
         moving_value = None
     source_id = session.get("provider_id") or session.get("source_id") or session.get("id")
     if not isinstance(source_id, str) or not source_id:
@@ -292,12 +535,43 @@ def _session_to_run(session: dict[str, Any]) -> dict[str, Any] | None:
         "started_at": started,
         "distance_km": distance_value,
         "duration_seconds": duration_value,
+        "source_utc_offset_seconds": _session_source_utc_offset_seconds(session),
         "run_type": "run",
         "avg_hr": average_hr,
         # This is provider-reported active duration. It is stored separately
         # from elapsed duration and is not inferred from summary averages.
         "moving_seconds": int(round(moving_value)) if moving_value is not None else None,
     }
+
+
+def _session_may_have_route(session: dict[str, Any]) -> bool:
+    """Return whether a session should be probed with ``exportExerciseTcx``.
+
+    ``hasGps`` is optional and Fitbit-origin records have been observed to
+    omit it even when TCX export succeeds.  Generic WORKOUT records also need
+    a route probe because their summary can omit distance until the detail is
+    hydrated.  Explicit non-running types remain out of the candidate set.
+    """
+
+    if session.get("has_gps") is True:
+        return True
+    activity_type = _canonical_activity_type(session.get("activity_type"))
+    if _is_running_activity_type(activity_type):
+        return True
+    # Nested run intervals can be hidden below a generic/custom parent, or a
+    # provider can label a child with a future run enum. Check those children
+    # before excluding an explicit parent type such as WALKING.
+    if any(
+        _is_running_activity_type(component.get("activity_type"))
+        for component in _session_component_values(session)
+    ):
+        return True
+    if activity_type in {None, "WORKOUT", "EXERCISE", "UNKNOWN"}:
+        # The summary for a custom run can be an unlabelled WORKOUT with no
+        # distance and no ``hasGps`` field. Its TCX sport is the only reliable
+        # classification signal, so probe every generic exercise summary.
+        return True
+    return False
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -380,10 +654,18 @@ def _build_google_stream(session: dict[str, Any], result: dict[str, Any]) -> tup
             "elapsed_seconds": elapsed,
             "distance_m": distance,
         }
+        if point.get("unknown_before") is True:
+            sample["unknown_before"] = True
         if point.get("lat") is not None:
             sample["latitude"] = point.get("lat")
         if point.get("lon") is not None:
             sample["longitude"] = point.get("lon")
+        altitude = point.get("altitude_m")
+        if isinstance(altitude, (int, float)) and math.isfinite(altitude):
+            sample["altitude_m"] = altitude
+        bpm = point.get("heart_rate")
+        if isinstance(bpm, (int, float)) and math.isfinite(bpm) and 20 <= bpm <= 260:
+            sample["heart_rate"] = int(round(bpm))
         points.append(sample)
         previous_distance = distance
         previous_point = point
@@ -403,32 +685,57 @@ def _build_google_stream(session: dict[str, Any], result: dict[str, Any]) -> tup
             if timestamp is not None and 20 <= bpm <= 260:
                 heart_rate_times.append((timestamp, bpm))
     for point, (timestamp, _) in zip(points, parsed_points):
-        if heart_rate_times:
+        if heart_rate_times and "heart_rate" not in point:
             nearest = min(heart_rate_times, key=lambda item: abs((item[0] - timestamp).total_seconds()))
             if abs((nearest[0] - timestamp).total_seconds()) <= 10:
                 point["heart_rate"] = nearest[1]
 
     laps: list[dict[str, Any]] = []
+    provider_splits = session.get("splits") if isinstance(session.get("splits"), list) else []
+    # TCX exports are authoritative for route-backed WORKOUT records and can
+    # contain laps even when the exercise summary omitted distance/splits.
+    if not provider_splits and isinstance(route, dict) and isinstance(route.get("laps"), list):
+        provider_splits = route.get("laps", [])
     session_start = _parse_timestamp(session.get("started_at")) or parsed_points[0][0]
-    for split in session.get("splits", []) if isinstance(session.get("splits"), list) else []:
+    for split in provider_splits:
         if not isinstance(split, dict):
             continue
         start_time = _parse_timestamp(split.get("start_time"))
         end_time = _parse_timestamp(split.get("end_time"))
+        if start_time is None:
+            start_time = _parse_timestamp(split.get("startTime"))
+        if end_time is None:
+            end_time = _parse_timestamp(split.get("endTime"))
         if start_time is None or end_time is None or end_time <= start_time:
             continue
         start_seconds = max(0.0, (start_time - session_start).total_seconds())
         end_seconds = max(start_seconds, (end_time - session_start).total_seconds())
+        elapsed_value = split.get("elapsed_seconds")
+        if elapsed_value is None:
+            elapsed_value = split.get("elapsedSeconds") or split.get("total_time_seconds")
+        moving_value = split.get("active_duration_seconds")
+        if moving_value is None:
+            moving_value = split.get("activeDuration")
+        try:
+            if isinstance(moving_value, str) and moving_value.endswith("s"):
+                moving_value = float(moving_value[:-1])
+        except (TypeError, ValueError):
+            moving_value = None
+        metadata = split.get("metadata")
         lap: dict[str, Any] = {
             "start_seconds": start_seconds,
             "end_seconds": end_seconds,
             "distance_m": split.get("distance_m"),
-            "elapsed_seconds": split.get("elapsed_seconds") or (end_seconds - start_seconds),
-            "moving_seconds": split.get("active_duration_seconds"),
-            "label": split.get("split_type"),
+            "elapsed_seconds": elapsed_value or (end_seconds - start_seconds),
+            "moving_seconds": moving_value if moving_value is not None else (elapsed_value or (end_seconds - start_seconds)),
+            "label": split.get("split_type") or split.get("splitType") or split.get("intensity"),
         }
         if split.get("pace_seconds") is not None:
             lap["pace_seconds"] = split.get("pace_seconds")
+        if isinstance(metadata, dict):
+            lap["provider_metadata"] = metadata
+        if "raw" in split:
+            lap["provider_lap"] = split.get("raw")
         laps.append(lap)
     return points, laps
 
@@ -451,15 +758,27 @@ def _persist_google_stream(db: Session, owner_id: str, run: Run, session: dict[s
     if stream is None:
         stream = RunStream(owner_id=owner_id, run_id=run.id, created_at=datetime.now(timezone.utc))
         db.add(stream)
+    else:
+        for key in ("weather", "official_race_distance_km"):
+            if key in (stream.analysis or {}):
+                analysis[key] = stream.analysis[key]
     stream.payload_gzip = compressed
     stream.sample_count = len(points)
     stream.raw_bytes = len(raw)
     stream.compressed_bytes = len(compressed)
     stream.laps = laps
+    analysis["provider_active_seconds"] = session.get("active_duration_seconds")
+    analysis["provider_exercise_events"] = session.get("exercise_events", [])
+    analysis["provider_metrics_summary"] = session.get("metrics_summary", {})
+    route = _route_for_session(session, result.get("routes", []))
+    if isinstance(route, dict) and route.get("coarse"):
+        analysis["telemetry_quality"] = route.get("quality", {})
+        analysis["telemetry_provenance"] = route.get("provenance", {})
+        analysis["telemetry_interval_seconds"] = route.get("sample_interval_seconds")
     stream.analysis = analysis
     run.stream_available = True
     moving = analysis.get("moving_seconds")
-    if isinstance(moving, (int, float)):
+    if analysis.get("moving_time_available") and isinstance(moving, (int, float)):
         run.moving_seconds = int(round(moving))
     return True
 
@@ -468,6 +787,7 @@ def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], con
     # Importing the canonical key helper avoids accidentally creating a key
     # whose owner prefix differs from normal/manual/CSV writes.
     from .main import _dedupe_key
+    from .run_enrichment import enrich_run
 
     imported = 0
     skipped = 0
@@ -476,8 +796,15 @@ def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], con
     for session in result.get("sessions", []):
         if not isinstance(session, dict):
             continue
-        payload = _session_to_run(session)
+        route = _route_for_session(session, result.get("routes", []))
+        payload = _session_to_run(session, route)
         if payload is None:
+            if _session_has_running_activity(session, route):
+                coverage = result.setdefault("coverage", {})
+                unresolved = coverage.setdefault("unresolved_running_sessions", [])
+                if len(unresolved) < 100:
+                    unresolved.append({"provider_id": session.get("provider_id"), "started_at": session.get("started_at"), "duration_seconds": session.get("duration_seconds"), "reason": "missing_valid_distance_or_duration"})
+                coverage["complete"] = False
             skipped += 1
             continue
         if raw_example is None:
@@ -487,15 +814,20 @@ def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], con
         if existing is not None:
             skipped += 1
             existing_run = db.get(Run, existing)
-            if existing_run is not None and not existing_run.stream_available:
+            if existing_run is not None:
+                # Refresh provider metrics without replacing user labels,
+                # notes, or shoe locks. Broad old summaries may be incomplete.
+                existing_run.distance_km = payload["distance_km"]
+                existing_run.duration_seconds = payload["duration_seconds"]
+                existing_run.avg_hr = payload["avg_hr"]
+                existing_run.source_utc_offset_seconds = payload.get("source_utc_offset_seconds")
+                if not existing_run.stream_available:
+                    existing_run.moving_seconds = payload.get("moving_seconds")
                 try:
-                    has_route = _route_for_session(session, result.get("routes", [])) is not None
+                    has_route = route is not None and bool(route.get("points"))
                     if has_route and not _persist_google_stream(db, owner_id, existing_run, session, result):
                         stream_errors += 1
-                    elif not has_route:
-                        # A provider exercise without a route is expected and
-                        # is not a stream failure; no error is recorded here.
-                        pass
+                    enrich_run(db, existing_run, provider_active_seconds=session.get("active_duration_seconds"))
                 except Exception:
                     stream_errors += 1
             continue
@@ -504,7 +836,7 @@ def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], con
 
             normalized = RunCreate(
                 source="google_health",
-                **{key: value for key, value in payload.items() if key != "moving_seconds"},
+                **{key: value for key, value in payload.items() if key not in {"moving_seconds", "source_utc_offset_seconds"}},
             )
         except Exception:
             skipped += 1
@@ -513,9 +845,11 @@ def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], con
                 owner_id=owner_id,
                 title=normalized.title,
                 started_at=normalized.started_at,
+                source_utc_offset_seconds=payload.get("source_utc_offset_seconds"),
                 distance_km=normalized.distance_km,
                 duration_seconds=normalized.duration_seconds,
                 run_type=normalized.run_type,
+                run_type_assignment="unassigned",
                 avg_hr=normalized.avg_hr,
                 shoe_id=None,
                 shoe_assignment="unassigned",
@@ -530,17 +864,19 @@ def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], con
         db.flush()
         imported += 1
         try:
-            has_route = _route_for_session(session, result.get("routes", [])) is not None
+            has_route = route is not None and bool(route.get("points"))
             if has_route and not _persist_google_stream(db, owner_id, run, session, result):
                 stream_errors += 1
             elif not has_route:
                 pass
+            enrich_run(db, run, provider_active_seconds=session.get("active_duration_seconds"))
         except Exception:
             stream_errors += 1
     coverage = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
     samples = coverage.get("record_counts", {}).get("samples", {}) if isinstance(coverage.get("record_counts"), dict) else {}
     available_types = ["exercise"] + sorted(str(key) for key in samples if key)
     connection.metadata_json = {
+        **(connection.metadata_json or {}),
         "coverage": coverage,
         "available_types": available_types,
         "last_error_count": len(result.get("errors", [])) if isinstance(result.get("errors"), list) else 0,
@@ -577,6 +913,21 @@ def _attach_bounded_google_routes(
     """
 
     sessions = result.get("sessions") if isinstance(result.get("sessions"), list) else []
+    connection = db.scalar(select(GoogleConnection).where(GoogleConnection.owner_id == owner_id, GoogleConnection.provider == "google-health"))
+    metadata = dict(connection.metadata_json or {}) if connection is not None else {}
+    probe_history = dict(metadata.get("route_probe_history") or {})
+    now = datetime.now(timezone.utc)
+
+    def probe_key(session: dict[str, Any]) -> str:
+        return str(session.get("provider_id") or session.get("source_id") or session.get("id") or "")
+
+    def probe_signature(session: dict[str, Any]) -> list[Any]:
+        return [session.get("activity_type"), session.get("has_gps"), session.get("distance_km")]
+
+    def recently_empty(session: dict[str, Any]) -> bool:
+        prior = probe_history.get(probe_key(session), {})
+        stamp = _parse_timestamp(prior.get("at"))
+        return bool(prior.get("status") == "empty" and prior.get("signature") == probe_signature(session) and stamp is not None and now - stamp < timedelta(days=7))
     completed_sources = {
         str(value)
         for value in db.scalars(
@@ -600,9 +951,30 @@ def _attach_bounded_google_routes(
     candidates = [
         session
         for session in sessions
-        if isinstance(session, dict) and session.get("has_gps") and not has_completed_stream(session)
+        if isinstance(session, dict)
+        and _session_may_have_route(session)
+        and not has_completed_stream(session)
+        and not recently_empty(session)
     ]
+    def route_priority(session: dict[str, Any]) -> int:
+        activity_type = _canonical_activity_type(session.get("activity_type"))
+        # Generic summaries with no usable distance are the records most
+        # likely to become importable only after TCX hydration. Prioritize
+        # them before already-populated RUNNING summaries when the per-sync
+        # export bound is reached.
+        distance = session.get("distance_km")
+        try:
+            has_distance = float(distance) > 0
+        except (TypeError, ValueError):
+            has_distance = False
+        needs_hydration = activity_type in {None, "WORKOUT", "EXERCISE", "UNKNOWN"} or not has_distance
+        return 0 if needs_hydration else 1
+
     candidates.sort(key=lambda session: str(session.get("started_at") or ""), reverse=True)
+    candidates.sort(key=route_priority)
+    # Unattempted records always precede retries. An empty/failed export must
+    # not monopolize every bounded batch and starve older real runs.
+    candidates.sort(key=lambda session: probe_history.get(probe_key(session), {}).get("at", ""))
     routes: list[dict[str, Any]] = []
     errors = result.setdefault("errors", [])
     if not isinstance(errors, list):
@@ -620,13 +992,42 @@ def _attach_bounded_google_routes(
             continue
         try:
             route = client.export_exercise_tcx(str(resource_name))
+            if isinstance(route, dict) and not route.get("points") and _is_running_activity_type(session.get("activity_type")) and hasattr(client, "fetch_supporting_samples"):
+                from .google_telemetry import build_telemetry_route
+                supporting = {}
+                for data_type in ("distance", "heart-rate"):
+                    values = []
+                    token = None
+                    seen_tokens = set()
+                    for _ in range(20):
+                        page = client.fetch_supporting_samples(data_type, start_time=session.get("started_at"), end_time=session.get("ended_at"), page_size=10000, page_token=token)
+                        values.extend(page.get("samples", []))
+                        token = page.get("next_page_token")
+                        if not token:
+                            break
+                        if token in seen_tokens:
+                            break
+                        seen_tokens.add(token)
+                    supporting[data_type] = values
+                    if token:
+                        errors.append({"stream": data_type, "error": "sample_limit_exceeded"})
+                        # Never classify a partial stream as complete telemetry.
+                        supporting[data_type] = []
+                fallback = build_telemetry_route(session, supporting)
+                if fallback is not None:
+                    route = fallback
             if isinstance(route, dict):
                 routes.append(route)
+                probe_history[probe_key(session)] = {"at": now.isoformat(), "status": "success" if route.get("points") else "empty", "signature": probe_signature(session)}
         except Exception as exc:
             # Keep provider identifiers out of normal log/CLI output.  The
             # owner-facing sync response may still distinguish route failure
             # from a missing route through this coarse error class.
             errors.append({"stream": "route", "error": exc.__class__.__name__})
+            probe_history[probe_key(session)] = {"at": now.isoformat(), "status": "error", "signature": probe_signature(session)}
+    if connection is not None:
+        metadata["route_probe_history"] = dict(sorted(probe_history.items(), key=lambda item: item[1].get("at", ""))[-2000:])
+        connection.metadata_json = metadata
     result["routes"] = routes
     coverage["record_counts"] = coverage.get("record_counts") if isinstance(coverage.get("record_counts"), dict) else {}
     coverage["record_counts"]["routes"] = len(routes)
@@ -659,23 +1060,38 @@ def _sync_owner(
         effective_start: date | None = start_date
         if effective_start is None and not full_history:
             effective_start = (now - timedelta(days=30)).date()
+        discovery = None
+        if effective_start is None:
+            discovery = client.fetch_activity(include_samples=False, include_routes=False, max_pages=MAX_SAMPLE_PAGES_PER_SYNC)
+            oldest = discovery.get("coverage", {}).get("oldest_returned")
+            parsed_oldest = _parse_timestamp(oldest)
+            if parsed_oldest is not None:
+                effective_start = (parsed_oldest.date() - timedelta(days=1)).replace(day=1)
         result = client.fetch_activity(
             start_time=effective_start,
             end_time=(now.date() + timedelta(days=1)),
             # Full-history sync imports all exercise summaries but does not
             # retain every lifetime telemetry point in memory.  Detailed route
             # streams are fetched in a bounded batch below.
-            include_samples=not full_history,
+            include_samples=False,
             include_routes=False,
             sample_page_size=500,
             max_pages=MAX_SAMPLE_PAGES_PER_SYNC,
         )
+        if discovery is not None:
+            result.setdefault("coverage", {})["history_discovery_complete"] = bool(discovery.get("coverage", {}).get("sessions_complete"))
+            if discovery.get("errors"):
+                result.setdefault("errors", []).extend(discovery["errors"])
+                result["coverage"]["complete"] = False
         _attach_bounded_google_routes(client, result, db, owner_id)
     finally:
         close = getattr(client, "close", None)
         if callable(close):
             close()
+    streams_before = db.scalar(select(func.count(RunStream.id)).where(RunStream.owner_id == owner_id)) or 0
     imported, skipped, stream_errors = _persist_sync_result(db, owner_id, result, connection)
+    db.flush()
+    streams_after = db.scalar(select(func.count(RunStream.id)).where(RunStream.owner_id == owner_id)) or 0
     if stream_errors:
         errors = result.setdefault("errors", [])
         if isinstance(errors, list):
@@ -686,13 +1102,21 @@ def _sync_owner(
     # A subsequent run can safely repeat the provider IDs because dedupe is
     # scoped to owner and source identity.
     coverage = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
+    if stream_errors:
+        coverage["routes_complete"] = False
+        coverage["complete"] = False
+    connection.metadata_json = {
+        **connection.metadata_json,
+        "coverage": coverage,
+        "last_error_count": len(result.get("errors", [])),
+    }
     pages = coverage.get("pages") if isinstance(coverage.get("pages"), dict) else {}
     connection.sync_cursor = json_page_checkpoint(pages)
     db.commit()
     return {
         "imported": imported,
         "skipped": skipped,
-        "streams_attached": int(coverage.get("record_counts", {}).get("routes", 0)) if isinstance(coverage.get("record_counts"), dict) else 0,
+        "streams_attached": int(streams_after - streams_before),
         "coverage": coverage,
         "errors": result.get("errors", []),
     }

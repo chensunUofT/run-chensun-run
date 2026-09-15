@@ -28,6 +28,12 @@ class _Point:
     distance_m: float
     lat: float | None = None
     lon: float | None = None
+    # Some route providers omit a cumulative distance and provide only GPS
+    # coordinates.  Keep that distinction so the segment builder can use a
+    # coordinate delta as a measured fallback without treating a synthetic
+    # zero as authoritative telemetry.
+    distance_known: bool = True
+    unknown_before: bool = False
 
 
 @dataclass(slots=True)
@@ -42,6 +48,9 @@ class _Segment:
     state: str
     is_gap: bool = False
     is_spike: bool = False
+    distance_source: str = "cumulative"
+    route_distance_m: float | None = None
+    gps_jitter: bool = False
 
 
 def _finite_number(value: Any, *, field: str, index: int, minimum: float = 0.0) -> float:
@@ -76,19 +85,53 @@ def _validate_samples(samples: Sequence[Mapping[str, Any]]) -> list[_Point]:
             raise ValueError(f"sample {index} must be a mapping")
         if "elapsed_seconds" not in sample:
             raise ValueError(f"sample {index} is missing elapsed_seconds")
-        if "distance_m" not in sample:
-            raise ValueError(f"sample {index} is missing cumulative distance_m")
         elapsed = _finite_number(sample["elapsed_seconds"], field="elapsed_seconds", index=index)
-        distance = _finite_number(sample["distance_m"], field="distance_m", index=index)
+        distance_value = sample.get("distance_m", sample.get("distance"))
+        distance_known = distance_value is not None
+        if distance_known:
+            distance = _finite_number(distance_value, field="distance_m", index=index)
+        else:
+            # A route can be reconstructed from latitude/longitude when a
+            # provider omitted cumulative distance.  The first missing value
+            # is represented by the previous cumulative distance (or zero),
+            # while ``distance_known`` retains the fact that it is inferred.
+            latitude_value = sample.get("lat")
+            if latitude_value is None:
+                latitude_value = sample.get("latitude")
+            longitude_value = sample.get("lon")
+            if longitude_value is None:
+                longitude_value = sample.get("longitude")
+            if latitude_value is None or longitude_value is None:
+                raise ValueError(f"sample {index} is missing cumulative distance_m")
+            distance = previous_distance if previous_distance is not None else 0.0
         if previous_time is not None and elapsed < previous_time:
             raise ValueError("samples must be sorted by nondecreasing elapsed_seconds")
-        if previous_distance is not None and distance < previous_distance:
+        if distance_known and previous_distance is not None and distance < previous_distance:
             raise ValueError("sample distance_m must be cumulative and nondecreasing")
-        lat = _optional_coordinate(sample.get("lat"), field="lat", index=index, low=-90.0, high=90.0)
-        lon = _optional_coordinate(sample.get("lon"), field="lon", index=index, low=-180.0, high=180.0)
-        points.append(_Point(elapsed, distance, lat, lon))
+        latitude_value = sample.get("lat")
+        if latitude_value is None:
+            latitude_value = sample.get("latitude")
+        longitude_value = sample.get("lon")
+        if longitude_value is None:
+            longitude_value = sample.get("longitude")
+        lat = _optional_coordinate(
+            latitude_value,
+            field="lat",
+            index=index,
+            low=-90.0,
+            high=90.0,
+        )
+        lon = _optional_coordinate(
+            longitude_value,
+            field="lon",
+            index=index,
+            low=-180.0,
+            high=180.0,
+        )
+        points.append(_Point(elapsed, distance, lat, lon, distance_known, sample.get("unknown_before") is True))
         previous_time = elapsed
-        previous_distance = distance
+        if distance_known:
+            previous_distance = distance
     return points
 
 
@@ -139,45 +182,105 @@ def _build_segments(
         first = points[index - 1]
         second = points[index]
         dt = second.elapsed_seconds - first.elapsed_seconds
-        raw_delta = second.distance_m - first.distance_m
+        raw_delta = second.distance_m - first.distance_m if first.distance_known and second.distance_known else None
+        route_delta = _haversine_meters(first, second)
         if dt <= 0:
             # Duplicate timestamps cannot contribute duration.  A positive
             # distance at the same timestamp is retained as an unknown spike.
-            is_spike = raw_delta > 0
+            duplicate_delta = raw_delta if raw_delta is not None else 0.0
+            is_spike = duplicate_delta > 0
             if is_spike:
                 flags.append("gps_distance_spike_filtered")
-            accepted_delta = 0.0 if is_spike else raw_delta
+            accepted_delta = 0.0 if is_spike else max(0.0, duplicate_delta)
             segments.append(
                 _Segment(
                     index=index - 1,
                     start_seconds=first.elapsed_seconds,
                     end_seconds=second.elapsed_seconds,
                     elapsed_seconds=0.0,
-                    raw_distance_m=raw_delta,
+                    raw_distance_m=max(0.0, duplicate_delta),
                     accepted_distance_m=accepted_delta,
                     speed_mps=None,
                     state="unknown",
                     is_spike=is_spike,
+                    distance_source="cumulative" if raw_delta is not None else "none",
+                    route_distance_m=route_delta,
                 )
             )
             corrected_distances.append(corrected_distances[-1] + accepted_delta)
             continue
 
-        speed = raw_delta / dt
-        route_delta = _haversine_meters(first, second)
+        # Cumulative distance is the preferred source because it already
+        # represents the provider's travelled path.  A route delta is a
+        # useful fallback when that field is absent, and it also lets us
+        # recover from a clearly corrupted cumulative jump.  GPS jitter is
+        # treated as stopped when the coordinate track disagrees strongly
+        # with an otherwise small cumulative segment; this prevents a
+        # stationary watch from turning into many tiny moving intervals.
+        raw_speed = raw_delta / dt if raw_delta is not None else None
         route_speed = route_delta / dt if route_delta is not None else None
-        is_gap = dt > max_gap_seconds
+        is_gap = dt > max_gap_seconds or second.unknown_before
+        distance_source = "cumulative" if raw_delta is not None else ("gps" if route_delta is not None else "none")
+        distance_delta = raw_delta if raw_delta is not None else (route_delta or 0.0)
+        speed = raw_speed if raw_speed is not None else route_speed
+        gps_jitter = False
+
+        # A provider cumulative jump can be repaired from a sane coordinate
+        # delta.  Conversely, ignore a route-only jump when the cumulative
+        # distance is internally plausible.  Both cases preserve real
+        # distance while flagging the source choice for callers.
+        if raw_speed is not None and raw_speed > gps_spike_speed_mps and route_speed is not None and route_speed <= gps_spike_speed_mps:
+            distance_delta = route_delta or 0.0
+            speed = route_speed
+            distance_source = "gps_recovered"
+            flags.append("gps_distance_recovered")
+            flags.append("gps_distance_spike_filtered")
+        elif route_speed is not None and route_speed > gps_spike_speed_mps and raw_speed is not None and raw_speed <= gps_spike_speed_mps:
+            distance_delta = raw_delta or 0.0
+            speed = raw_speed
+            distance_source = "cumulative_route_spike_ignored"
+            flags.append("gps_route_spike_ignored")
+        elif route_speed is not None and raw_speed is not None:
+            # Coordinate drift below the movement threshold is a common GPS
+            # artefact.  If the cumulative stream says movement while the
+            # route remains below that threshold, use the route evidence and
+            # discard the excess distance as jitter.  Normal walking remains
+            # moving because its route speed is usually well above 0.5 m/s.
+            if (
+                route_speed < speed_threshold_mps and raw_speed >= speed_threshold_mps
+            ) or (
+                # A small route displacement that is materially shorter than
+                # the cumulative delta is usually coordinate wander around a
+                # stationary point.  Keep this conservative so ordinary
+                # walking (where both sources agree) remains moving.
+                route_speed < max(1.0, speed_threshold_mps * 2.0)
+                and raw_delta > (route_delta or 0.0) * 1.35
+                and (route_delta or 0.0) <= 12.0
+            ):
+                distance_delta = route_delta or 0.0
+                speed = route_speed
+                distance_source = "gps_jitter_filtered"
+                gps_jitter = True
+                flags.append("gps_jitter_smoothed")
+
+        # A route itself can be an implausible jump only when no trustworthy
+        # cumulative value is available.  Do not discard a good cumulative
+        # segment merely because one coordinate is noisy.
         is_spike = (
-            raw_delta > 0 and speed > gps_spike_speed_mps
-        ) or (route_speed is not None and route_speed > gps_spike_speed_mps)
+            distance_delta > 0 and speed is not None and speed > gps_spike_speed_mps
+        )
         if is_gap:
             flags.append("missing_data_gap")
         if is_spike:
             flags.append("gps_distance_spike_filtered")
         accepted_delta = 0.0 if is_spike else raw_delta
+        if raw_delta is None or distance_source in {"gps_recovered", "gps_jitter_filtered"}:
+            accepted_delta = 0.0 if is_spike or gps_jitter else max(0.0, distance_delta)
         if is_gap or is_spike:
             state = "unknown"
-        elif speed >= speed_threshold_mps:
+        elif gps_jitter:
+            state = "stopped"
+        elif speed is not None and speed >= speed_threshold_mps:
             state = "moving"
         else:
             state = "stopped"
@@ -187,12 +290,15 @@ def _build_segments(
                 start_seconds=first.elapsed_seconds,
                 end_seconds=second.elapsed_seconds,
                 elapsed_seconds=dt,
-                raw_distance_m=raw_delta,
+                raw_distance_m=max(0.0, raw_delta or 0.0),
                 accepted_distance_m=accepted_delta,
                 speed_mps=speed,
                 state=state,
                 is_gap=is_gap,
                 is_spike=is_spike,
+                distance_source=distance_source,
+                route_distance_m=route_delta,
+                gps_jitter=gps_jitter,
             )
         )
         corrected_distances.append(corrected_distances[-1] + accepted_delta)
@@ -279,7 +385,12 @@ def _split_metrics(
         "distance_m": max(0.0, distance_m),
         "elapsed_seconds": elapsed,
         "moving_seconds": moving_seconds,
-        "pace_seconds": _pace(moving_seconds, moving_distance),
+        # A moving pace is distance divided by net moving time.  Use the
+        # complete accepted split distance so a stopped crossing or an
+        # uncertain-but-retained segment cannot silently disappear from the
+        # denominator.  Keep moving_distance_m for callers that need the
+        # confidently classified portion separately.
+        "pace_seconds": _pace(moving_seconds, distance_m),
         "elapsed_pace_seconds": elapsed / distance_m if distance_m > 0 else None,
         "moving_distance_m": moving_distance,
         "unknown_seconds": unknown_seconds,
@@ -317,6 +428,94 @@ def _build_detected_intervals(segments: list[_Segment]) -> list[dict[str, Any]]:
     for interval in intervals:
         interval["pace_seconds"] = _pace(interval["moving_seconds"], interval["distance_m"])
     return intervals
+
+
+def _confidence_label(confidence: float) -> str:
+    if confidence >= 0.85:
+        return "high"
+    if confidence >= 0.60:
+        return "medium"
+    if confidence > 0:
+        return "low"
+    return "unknown"
+
+
+def _reported_moving_seconds(
+    value: Any,
+    *,
+    elapsed_seconds: float,
+) -> tuple[float | None, str | None]:
+    """Validate a provider active-duration summary without inventing one.
+
+    Google Health and similar providers expose an ``activeDuration`` alongside
+    an exercise interval.  It is a stronger source than a sparse route, but a
+    malformed value should leave the inferred result intact instead of being
+    clamped into a plausible-looking number.
+    """
+
+    if value is None:
+        return None, None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None, "reported_moving_time_invalid"
+    if not math.isfinite(number) or number < 0 or number > elapsed_seconds + 1e-6:
+        return None, "reported_moving_time_invalid"
+    return min(number, elapsed_seconds), None
+
+
+def _moving_time_quality(
+    *,
+    points: list[_Point],
+    segments: list[_Segment],
+    elapsed_seconds: float,
+    confident_seconds: float,
+    unclassified_seconds: float,
+    source: str,
+    accepted_distance: float,
+) -> tuple[float, str, str]:
+    """Return a bounded confidence score and a human-readable explanation."""
+
+    if source == "provider_reported":
+        return 0.98, "high", "Moving time was supplied by the activity provider."
+    if len(points) < 2 or elapsed_seconds <= 0:
+        return 0.0, "unknown", "There are not enough telemetry points to infer moving time."
+    if accepted_distance <= 0:
+        return 0.0, "unknown", "The telemetry contains no trusted distance for a moving-time estimate."
+
+    coverage = max(0.0, min(1.0, confident_seconds / elapsed_seconds))
+    unknown_ratio = max(0.0, min(1.0, unclassified_seconds / elapsed_seconds))
+    coordinate_count = sum(1 for point in points if point.lat is not None and point.lon is not None)
+    known_distance_count = sum(1 for point in points if point.distance_known)
+    coordinate_ratio = coordinate_count / len(points)
+    distance_ratio = known_distance_count / len(points)
+
+    # The score is deliberately broad.  It tells callers whether a pace is
+    # suitable for comparison, not how accurate a particular second is.
+    confidence = 0.78 if coordinate_ratio < 0.5 else 0.86
+    confidence *= 0.75 + 0.25 * coverage
+    confidence *= 0.80 + 0.20 * distance_ratio
+    confidence *= max(0.25, 1.0 - 0.70 * unknown_ratio)
+    if any(
+        segment.is_spike
+        or segment.gps_jitter
+        or segment.distance_source in {"gps_recovered", "cumulative_route_spike_ignored"}
+        for segment in segments
+    ):
+        confidence *= 0.88
+    if len(points) < 5:
+        confidence *= 0.88
+    confidence = round(max(0.0, min(0.95, confidence)), 3)
+    label = _confidence_label(confidence)
+    if unknown_ratio > 0:
+        reason = "Moving time is estimated from telemetry with a missing-data or GPS-uncertain portion."
+    elif any(segment.gps_jitter for segment in segments):
+        reason = "Moving time is estimated from distance and GPS after smoothing coordinate jitter."
+    elif coordinate_ratio >= 0.5:
+        reason = "Moving time is estimated from GPS distance and a speed threshold."
+    else:
+        reason = "Moving time is estimated from cumulative distance and a speed threshold."
+    return confidence, label, reason
 
 
 def _lap_number(lap: Mapping[str, Any], names: tuple[str, ...], *, field: str, index: int) -> Any:
@@ -360,8 +559,12 @@ def _validate_explicit_laps(laps: Sequence[Mapping[str, Any]]) -> list[dict[str,
             raise ValueError(f"lap {index} elapsed_seconds must be greater than zero")
         moving_value = original.get("moving_seconds", original.get("active_duration_seconds", elapsed))
         moving = _finite_number(moving_value, field="moving_seconds", index=index)
-        if moving > elapsed + 1e-9:
+        # Protobuf durations retain nanoseconds, while Python datetime
+        # truncates timestamps to microseconds. Accept only that rounding
+        # difference; genuinely inconsistent durations remain errors.
+        if moving > elapsed + 1e-6:
             raise ValueError(f"lap {index} moving_seconds cannot exceed elapsed_seconds")
+        moving = min(moving, elapsed)
         pace_value = original.get("pace_seconds")
         pace = (
             _finite_number(pace_value, field="pace_seconds", index=index)
@@ -394,6 +597,8 @@ def analyze_activity(
     max_gap_seconds: float = DEFAULT_MAX_GAP_SECONDS,
     gps_spike_speed_mps: float = DEFAULT_GPS_SPIKE_SPEED_MPS,
     split_distance_m: float = DEFAULT_SPLIT_DISTANCE_M,
+    reported_moving_seconds: float | None = None,
+    active_duration_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Analyze elapsed time and cumulative distance samples.
 
@@ -403,7 +608,10 @@ def analyze_activity(
     threshold.  Segments separated by more than ``max_gap_seconds`` and
     implausible GPS jumps are excluded from moving/stopped inference and are
     reported as uncertain.  The defaults are intentionally configurable and
-    should not be described as an exact Strava-equivalent result.
+    should not be described as an exact Strava-equivalent result.  An
+    optional provider active-duration value is retained as
+    ``provider_moving_seconds`` for comparison, but never replaces the
+    sample-derived net moving time.
     """
 
     _validate_thresholds(
@@ -415,10 +623,20 @@ def analyze_activity(
     )
     points = _validate_samples(samples)
     explicit_splits = _validate_explicit_laps(laps) if laps is not None else None
+    if reported_moving_seconds is not None and active_duration_seconds is not None:
+        try:
+            disagree = float(reported_moving_seconds) != float(active_duration_seconds)
+        except (TypeError, ValueError):
+            disagree = True
+        if disagree:
+            raise ValueError("reported_moving_seconds and active_duration_seconds disagree")
+    reported_value = reported_moving_seconds if reported_moving_seconds is not None else active_duration_seconds
     if not points:
         flags = ["no_samples", "moving_time_estimated"]
         if explicit_splits:
             flags.append("explicit_laps_used")
+        if reported_value is not None:
+            flags.append("reported_moving_time_unavailable_without_elapsed_samples")
         return {
             "elapsed_seconds": 0.0,
             "moving_seconds": 0.0,
@@ -434,13 +652,30 @@ def analyze_activity(
             "unclassified_seconds": 0.0,
             "moving_distance_m": 0.0,
             "unclassified_distance_m": 0.0,
+            "moving_time_source": "unavailable",
+            "moving_time_estimated": True,
+            "provider_moving_seconds": None,
+            "moving_time_confidence": 0.0,
+            "moving_time_confidence_label": "unknown",
+            "moving_time_reason": "No telemetry samples were provided; moving time is unavailable.",
+            "moving_time_available": False,
+            "moving_pace_seconds_per_km": None,
+            "elapsed_pace_seconds_per_km": None,
+            "sample_count": 0,
         }
 
     # Normalize the first point to zero while retaining cumulative deltas.
     origin_time = points[0].elapsed_seconds
     origin_distance = points[0].distance_m
     points = [
-        _Point(point.elapsed_seconds - origin_time, point.distance_m, point.lat, point.lon)
+        _Point(
+            point.elapsed_seconds - origin_time,
+            point.distance_m,
+            point.lat,
+            point.lon,
+            point.distance_known,
+            point.unknown_before,
+        )
         for point in points
     ]
     raw_distance = max(0.0, points[-1].distance_m - origin_distance)
@@ -455,9 +690,9 @@ def analyze_activity(
         min_stop_seconds=float(min_stop_seconds),
     )
     accepted_distance = corrected_distances[-1] if corrected_distances else 0.0
-    moving_seconds = sum(segment.elapsed_seconds for segment in segments if segment.state == "moving")
+    inferred_moving_seconds = sum(segment.elapsed_seconds for segment in segments if segment.state == "moving")
     stopped_seconds = sum(segment.elapsed_seconds for segment in segments if segment.state == "stopped")
-    confident_seconds = moving_seconds + stopped_seconds
+    confident_seconds = inferred_moving_seconds + stopped_seconds
     unclassified_seconds = sum(segment.elapsed_seconds for segment in segments if segment.state == "unknown")
     moving_distance = sum(
         segment.accepted_distance_m for segment in segments if segment.state == "moving"
@@ -485,6 +720,31 @@ def analyze_activity(
     if segments:
         quality_flags.append("inferred_intervals")
 
+    reported, report_flag = _reported_moving_seconds(
+        reported_value,
+        elapsed_seconds=elapsed_seconds,
+    )
+    if report_flag is not None:
+        quality_flags.append(report_flag)
+    elif reported is not None:
+        # Keep provider active duration as corroborating metadata.  Detailed
+        # GPS samples still drive net moving time so a provider's broad
+        # ``activeDuration`` cannot reintroduce traffic-light stops.
+        quality_flags.append("provider_moving_time_available")
+    moving_time_source = "gps_speed_threshold" if any(
+        segment.route_distance_m is not None for segment in segments
+    ) else "distance_speed_threshold"
+    moving_seconds = inferred_moving_seconds
+    moving_time_confidence, moving_time_confidence_label, moving_time_reason = _moving_time_quality(
+        points=points,
+        segments=segments,
+        elapsed_seconds=elapsed_seconds,
+        confident_seconds=confident_seconds,
+        unclassified_seconds=unclassified_seconds,
+        source=moving_time_source,
+        accepted_distance=accepted_distance,
+    )
+
     if explicit_splits is not None:
         splits = explicit_splits
     else:
@@ -505,12 +765,26 @@ def analyze_activity(
             split_start_distance = split_end_distance
 
     intervals = _build_detected_intervals(segments)
+    # Pace is intentionally expressed in seconds per metre here to preserve
+    # the original API contract; the explicit per-kilometre field is provided
+    # for new consumers and avoids unit ambiguity.
+    moving_pace_seconds = _pace(moving_seconds, accepted_distance)
+    elapsed_pace_seconds = elapsed_seconds / accepted_distance if accepted_distance > 0 else None
+    distance_sources = {segment.distance_source for segment in segments if segment.accepted_distance_m > 0}
+    if not distance_sources:
+        distance_source = "none"
+    elif len(distance_sources) == 1:
+        distance_source = next(iter(distance_sources))
+    else:
+        distance_source = "mixed"
     return {
         "elapsed_seconds": elapsed_seconds,
         "moving_seconds": moving_seconds,
         "stopped_seconds": stopped_seconds,
         "distance_m": accepted_distance,
-        "moving_pace_seconds": _pace(moving_seconds, moving_distance),
+        "moving_pace_seconds": moving_pace_seconds,
+        "moving_pace_seconds_per_km": moving_pace_seconds * 1000 if moving_pace_seconds is not None else None,
+        "elapsed_pace_seconds_per_km": elapsed_pace_seconds * 1000 if elapsed_pace_seconds is not None else None,
         "quality_flags": quality_flags,
         "splits": splits,
         "intervals": intervals,
@@ -523,6 +797,16 @@ def analyze_activity(
         "unclassified_seconds": unclassified_seconds,
         "moving_distance_m": moving_distance,
         "unclassified_distance_m": unclassified_distance,
+        "distance_source": distance_source,
+        "moving_time_source": moving_time_source,
+        "moving_time_estimated": True,
+        "provider_moving_seconds": reported,
+        "moving_time_confidence": moving_time_confidence,
+        "moving_time_confidence_label": moving_time_confidence_label,
+        "moving_time_reason": moving_time_reason,
+        "moving_time_available": bool(accepted_distance > 0 and moving_seconds is not None),
+        "sample_count": len(points),
+        "gps_sample_count": sum(1 for point in points if point.lat is not None and point.lon is not None),
         "thresholds": {
             "speed_threshold_mps": float(speed_threshold_mps),
             "min_stop_seconds": float(min_stop_seconds),

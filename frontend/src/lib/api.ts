@@ -1,8 +1,6 @@
 import type {
   Analysis,
   AuthConfig,
-  Checkin,
-  CheckinPayload,
   GoogleHealthInspection,
   ImportResult,
   Integration,
@@ -67,7 +65,7 @@ function readableError(value: unknown) {
   return undefined
 }
 
-async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+export async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   const { auth = true, ...requestInit } = init ?? {}
   const token = auth && accessTokenProvider ? await accessTokenProvider() : null
   const headers = new Headers(requestInit.headers)
@@ -140,12 +138,6 @@ export const api = {
   updateShoe: (id: RunId, payload: Partial<ShoePayload>) =>
     request<Shoe>(`/api/shoes/${encodeURIComponent(String(id))}`, {
       method: 'PATCH',
-      body: JSON.stringify(payload),
-    }),
-  getCheckin: (date: string) => request<Checkin>(`/api/checkins/${encodeURIComponent(date)}`),
-  updateCheckin: (date: string, payload: CheckinPayload) =>
-    request<Checkin>(`/api/checkins/${encodeURIComponent(date)}`, {
-      method: 'PUT',
       body: JSON.stringify(payload),
     }),
   getIntegrations: () => request<Integration[]>('/api/integrations'),

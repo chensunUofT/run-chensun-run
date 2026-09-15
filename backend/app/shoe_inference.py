@@ -46,7 +46,9 @@ def _candidate_for_run(shoe: Any, run: Any, run_date: date, today: date, mileage
         return None
     rules = _rules(shoe)
     distance = float(getattr(run, "distance_km", 0.0))
-    pace = float(getattr(run, "duration_seconds", 0.0)) / distance if distance > 0 else 0.0
+    moving = getattr(run, "moving_seconds", None)
+    duration = moving if moving is not None else getattr(run, "duration_seconds", 0.0)
+    pace = float(duration) / distance if distance > 0 else 0.0
     min_distance = rules.get("min_distance_km")
     max_distance = rules.get("max_distance_km")
     min_pace = rules.get("min_pace_seconds")

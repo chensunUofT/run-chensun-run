@@ -1,0 +1,28 @@
+{
+  "fitness": {
+    "eyebrow": "跑步状态",
+    "title": "训练状态估计",
+    "score": "分",
+    "effortEstimate": "训练努力估计",
+    "raceVdot": "比赛 VDOT 估计",
+    "loading": "正在估计训练状态…",
+    "unavailable": "暂时无法获取估计结果。",
+    "confidenceHigh": "高置信度",
+    "confidenceMedium": "中等置信度",
+    "confidenceLow": "低置信度",
+    "confidenceInsufficient": "数据不足",
+    "methodRace": "比赛强度模型",
+    "methodTimeTrial": "计时测试模型",
+    "methodInterval": "间歇训练代理",
+    "methodTempo": "节奏训练代理",
+    "methodLong": "长距离训练代理",
+    "methodEasy": "轻松跑训练代理",
+    "methodQuality": "强度课训练代理",
+    "methodInsufficient": "数据不足",
+    "methodGeneral": "训练代理",
+    "heatPenalty": "高温 +{value}%",
+    "ascentPenalty": "爬升 +{value}%",
+    "trainingNote": "这是训练跑的努力估计，不是比赛 VDOT。",
+    "raceNote": "根据比赛或计时测试强度估计 VDOT。"
+  }
+}

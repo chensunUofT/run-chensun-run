@@ -1,29 +1,27 @@
-# Verification — 2026-09-14
+# Verification — 2026-09-15
 
-## Local application
+## Application checks
 
-- Backend suite: 38 tests passed, including cross-browser OAuth rejection, replay rejection, and allowlist revocation; two dependency deprecation warnings remain.
-- Final frontend typecheck and production build passed. The optional Supabase SDK is dynamically loaded and pinned in the lockfile.
-- FastAPI starts on loopback with the existing SQLite database and private local environment file.
-- The built frontend and `/api/health` return HTTP 200 from the same origin at `http://localhost:8000`.
-- Browser checks confirm the settings page, Google connection entry, and English/Chinese language switching.
-- Provider and activity-analysis tests cover pagination, physical-time filters, real resource names, TCX parsing, elapsed/active duration separation, stops, gaps, and splits.
-- Feature regression tests cover shoe purchase-date inference, manual assignment locks, share privacy/expiry/revocation, stream coordinates and laps, and personal owner-session isolation.
-- Source and documentation scanning found no Chinese text outside UI translation resources.
-- The Render Blueprint passed validation against Render's official JSON schema.
+Backend tests cover owner isolation, Google OAuth and pagination, TCX and interval telemetry mapping, moving-time gaps and stops, training classification, manual type/shoe preservation, share privacy, weather failures, and coaching. The suite passed before final explicit-gap integration; remaining new regression and related enrichment tests passed separately. Frontend TypeScript and the Vite production build passed.
 
-Synthetic tests use isolated temporary databases. The normal local database was backed up before additive migration. No real Google Health data has been imported yet.
+The explicit-gap regression verifies that a 60-second record with 20 seconds of observed stops and 30 seconds of missing data retains 40 seconds as moving time. Coarse telemetry retains source provenance and never fabricates GPS or altitude.
 
-## External configuration
+Numeric calendar dates prefer the provider's civil date. Run detail and share pace use moving seconds when available. Manual training labels and shoe locks survive repeated synchronization. Synthetic tests use isolated databases, never the personal database.
 
-- Google Cloud project, Google Health API, testing consent screen, Web OAuth client, and owner test user exist.
-- The local callback URI was verified in Google Cloud. Client credentials are saved only in ignored local files.
-- Google read-only scope settings were saved after approval. Actual health-data consent and first sync remain pending.
-- Supabase Free project and application schema are initialized. Security advisors returned no findings. The dedicated runtime role passed live owner writes, post-commit refresh, cross-owner RLS isolation, and pooled-connection claim reset checks.
-- GitHub repository exists. Windows git-remote-https crashed during upload; publication proceeds through the GitHub connector. Remote CI, Render deployment, and scheduled sync activation remain unverified.
+## Real-account integration
+
+Monthly exercise queries recovered richer running types and metrics than broad queries for the same provider IDs. The importer queries monthly windows and deduplicates across them. Pure walking is excluded. Sessions without valid distance or duration are reported as incomplete. Private per-record audits remain in ignored local files.
+
+TCX, standalone distance intervals, and heart-rate pages were independently read and reconciled. Moving time is a Runwise estimate, not Strava's proprietary result. Phone-visible custom segments were not present in checked exports; provider distance splits remain distinct from inferred intervals.
+
+## Cloud status
+
+The dedicated Supabase runtime role authenticated successfully. The personal dataset, compressed streams, shoes, encrypted Google connection, and coaching records were copied in one transaction. Counts were independently verified and identity sequences reset administratively. Security advisors returned no findings.
+
+Render's baseline build succeeded but startup failed because DATABASE_URL was absent. Server environment configuration is pending explicit approval for the credential destination. The Google OAuth client currently has only the local callback. Cloud readiness, cloud callback, and scheduled sync are not complete.
+
+Historical weather bulk lookup is pending explicit approval for Open-Meteo. Fitness computation supports missing weather and labels incomplete evidence; it does not invent readings.
 
 ## Release gate
 
-Before declaring cloud deployment complete, verify the application with its restricted PostgreSQL runtime role, including owner claims after commit, anonymous access denial, a real Google callback, historical coverage, detailed streams, and persistence after redeployment. Local tests and the frontend build passed after the review fixes; they do not replace these live checks.
-
-Free infrastructure does not guarantee permanent uptime. A scheduled real sync is not evidence of successful provider access until a connected account has completed a sync.
+Before declaring cloud deployment complete, verify HTTPS app/API readiness, anonymous private-data denial, owner Google sign-in, database-backed run detail, and persistence across redeployment. Keep credentials and private health audits out of Git. Free Render and Supabase plans do not guarantee continuous availability.

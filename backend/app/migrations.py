@@ -26,6 +26,8 @@ _MISSING_COLUMNS: dict[str, dict[str, str]] = {
         "rules": "JSON NOT NULL DEFAULT '{}'",
     },
     "runs": {
+        "run_type_assignment": "VARCHAR(20) NOT NULL DEFAULT 'unassigned'",
+        "source_utc_offset_seconds": "INTEGER",
         "owner_id": "VARCHAR(36) NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001'",
         "shoe_assignment": "VARCHAR(20) NOT NULL DEFAULT 'unassigned'",
         "shoe_confidence": "FLOAT",
@@ -77,6 +79,9 @@ def migrate_database(engine: Engine, *, owner_id: str = DEV_OWNER_ID, production
             "shares",
             "google_connections",
             "oauth_states",
+            "coaching_goals",
+            "coaching_schedules",
+            "coaching_sessions",
         }
         missing_tables = sorted(required_tables - existing_tables)
         if missing_tables:

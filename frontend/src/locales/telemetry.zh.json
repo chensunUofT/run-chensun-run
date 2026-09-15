@@ -1,0 +1,35 @@
+{
+  "telemetry": {
+    "eyebrow": "活动详情",
+    "title": "跑步曲线",
+    "subtitle": "按距离对齐本次跑步的数据流，在一张图中查看配速、心率和海拔。",
+    "pace": "配速",
+    "heartRate": "心率",
+    "elevation": "海拔",
+    "units": {
+      "perKm": "/公里",
+      "bpm": "次/分",
+      "meters": "米",
+      "km": "公里"
+    },
+    "samples": "{count} 个绘制点",
+    "sourceSamples": "{count} 个原始采样",
+    "customLaps": "{count} 个设备分段",
+    "scrub": "查看距离",
+    "startInspection": "在图表上移动以查看数据点",
+    "legend": "跑步曲线图例",
+    "toggleSeries": "切换{metric}曲线",
+    "distanceAxis": "距离 · 公里",
+    "ariaCombinedChart": "配速、心率和海拔随距离变化",
+    "noDistance": "这组遥测数据没有可用的距离值。",
+    "noSeriesAny": "没有可绘制的遥测数据",
+    "measured": "实测数据流",
+    "gap": "经过时间间隔超过 30 秒",
+    "customLapLegend": "设备分段",
+    "noData": "本次跑步没有可绘制的计时遥测采样。",
+    "noSeries": "没有可用的{metric}数据",
+    "noValue": "暂无数据",
+    "ariaChart": "{metric}随距离变化",
+    "noCustomSegments": "服务商未返回自定义训练区间。下方仅列出距离分段。"
+  }
+}

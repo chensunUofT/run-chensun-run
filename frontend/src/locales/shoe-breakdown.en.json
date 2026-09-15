@@ -1,0 +1,16 @@
+{
+  "shoeBreakdown": {
+    "eyebrow": "RECORDED ACTIVITY",
+    "title": "Mileage breakdown",
+    "oneRun": "1 run",
+    "manyRuns": "{count} runs",
+    "oneMonth": "1 month",
+    "manyMonths": "{count} months",
+    "mileageByMonth": "Mileage by month",
+    "mileageByType": "Mileage by training type",
+    "typeSummary": "Recorded distance and runs",
+    "recordedOnly": "Recorded runs only · initial mileage stays outside monthly totals.",
+    "noRecordedRuns": "No runs are assigned to this shoe yet.",
+    "noMonthlyData": "No dated runs are available for monthly mileage."
+  }
+}

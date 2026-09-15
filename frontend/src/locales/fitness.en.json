@@ -1,0 +1,28 @@
+{
+  "fitness": {
+    "eyebrow": "RUN FITNESS",
+    "title": "Training fitness estimate",
+    "score": "score",
+    "effortEstimate": "Training effort estimate",
+    "raceVdot": "Race VDOT estimate",
+    "loading": "Estimating training fitness…",
+    "unavailable": "This estimate is temporarily unavailable.",
+    "confidenceHigh": "High confidence",
+    "confidenceMedium": "Medium confidence",
+    "confidenceLow": "Low confidence",
+    "confidenceInsufficient": "Insufficient data",
+    "methodRace": "Race effort model",
+    "methodTimeTrial": "Time-trial model",
+    "methodInterval": "Interval proxy",
+    "methodTempo": "Tempo proxy",
+    "methodLong": "Long-run proxy",
+    "methodEasy": "Easy-run proxy",
+    "methodQuality": "Quality-run proxy",
+    "methodInsufficient": "Insufficient data",
+    "methodGeneral": "Training proxy",
+    "heatPenalty": "+{value}% heat",
+    "ascentPenalty": "+{value}% ascent",
+    "trainingNote": "An effort estimate for a training run, not a race VDOT.",
+    "raceNote": "A VDOT estimate based on a race or time-trial effort."
+  }
+}

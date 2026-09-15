@@ -1,0 +1,15 @@
+{
+  "statsPeriodPicker": {
+    "period": "Stats period",
+    "week": "Week",
+    "month": "Month",
+    "chooseWeek": "Choose a week",
+    "chooseMonth": "Choose a month",
+    "previous": "Previous period",
+    "next": "Next period",
+    "weekRange": "Week of {date}",
+    "monthRange": "{date}",
+    "invalidWeek": "Choose a valid week",
+    "invalidMonth": "Choose a valid month"
+  }
+}

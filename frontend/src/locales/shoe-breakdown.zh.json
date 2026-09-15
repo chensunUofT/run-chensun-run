@@ -1,0 +1,16 @@
+{
+  "shoeBreakdown": {
+    "eyebrow": "已记录活动",
+    "title": "里程明细",
+    "oneRun": "1 次跑步",
+    "manyRuns": "{count} 次跑步",
+    "oneMonth": "1 个月",
+    "manyMonths": "{count} 个月",
+    "mileageByMonth": "按月份统计",
+    "mileageByType": "按训练类型统计",
+    "typeSummary": "已记录的距离和次数",
+    "recordedOnly": "仅统计已记录的跑步·初始里程不会计入月份总和。",
+    "noRecordedRuns": "这双跑鞋还没有关联的跑步记录。",
+    "noMonthlyData": "没有可用于月份统计的日期记录。"
+  }
+}

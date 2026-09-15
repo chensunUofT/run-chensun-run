@@ -25,7 +25,10 @@ This runs backend tests and the frontend production build.
 
 ## Data and features
 
-- Runs, weekly/monthly statistics, daily check-ins, and rule-based feedback.
+- Four main views: runs, weekly/monthly statistics, coach/training plan, and shoe management.
+- The run library supports filtered multi-selection and atomic bulk updates of run type or shoes. Explicit shoe choices, including no shoe, remain manual assignments.
+- Body status is read from health data or derived from available measurements; no manual daily check-ins. Missing health data remains unavailable.
+- Data-source settings and import/export tools are available in a settings dialog.
 - Google Health integration for exercise records and available detailed samples. App sign-in and permission to read health data are separate authorizations.
 - Data inspection distinguishes the earliest observed record from a completed history scan. Available history depends on the account and provider response.
 - Detailed samples and laps support split analysis and estimated moving time. Missing or sparse samples limit accuracy; summary-only activities cannot reveal individual traffic-light stops.
@@ -33,7 +36,9 @@ This runs backend tests and the frontend production build.
 - Share snapshots for a run, week, or month, with expiry and revocation. Sharing is an explicit action; snapshots omit precise routes and private notes.
 - English/Chinese interface and a Google-authorized private owner session. Separate registration is deferred.
 
-Demo data is opt-in and is not personal device data. Coaching feedback uses transparent rules; no LLM service is connected. Other activity platforms, a complete training-plan engine, weather enrichment, and original-file import adapters are future work.
+Run lists and statistics exclude demo/sample records. Run details combine smoothed pace, heart rate, and elevation on a distance-based chart when samples are available. Opening a run queries nearby historical temperature, humidity, and conditions through Open-Meteo using a rounded location. Explicit custom intervals are highlighted only when supplied by the provider; distance laps are not treated as workout intervals.
+
+Coaching uses a saved race goal, historical performance projection, and a configurable weekly schedule to generate an editable plan through race day. The default schedule is Tuesday/Saturday easy, Thursday quality, and Sunday long. Monthly calendars encode distance and type; weekly blocks combine recorded and planned sessions. See [training algorithm](docs/training-algorithm.md) for assumptions and limitations. No LLM service is connected. Other activity platforms and original-file import adapters remain future work.
 
 CSV examples are in [examples/runs.csv](examples/runs.csv). Personal exports, credentials, local databases, dependencies, and scratch files must not be committed. Keep personal files under the ignored `work/` directory or outside the repository.
 

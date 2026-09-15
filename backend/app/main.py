@@ -19,15 +19,15 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import CurrentUser, get_current_owner, get_current_user
 from .config import Settings
+from .coaching import register_coaching_routes
 from .db import (
     Base,
-    Checkin,
     GoogleConnection,
     OAuthState,
     Run,
@@ -40,8 +40,6 @@ from .db import (
 from .migrations import migrate_database
 from .owner import DEV_OWNER_ID
 from .schemas import (
-    CheckinInput,
-    CheckinRead,
     GoogleDataInspection,
     HealthRead,
     IntegrationRead,
@@ -104,9 +102,17 @@ def _display_iso(value: datetime) -> str:
     return _ensure_utc(value).isoformat()
 
 
+def _run_local_date(run: Run) -> date:
+    offset = run.source_utc_offset_seconds
+    if offset is not None and -86400 < offset < 86400:
+        return _ensure_utc(run.started_at).astimezone(timezone(timedelta(seconds=offset))).date()
+    return _local_date(run.started_at)
+
+
 def _run_read(run: Run) -> RunRead:
     return RunRead(
         id=run.id,
+        local_date=_run_local_date(run),
         title=run.title,
         started_at=_ensure_utc(run.started_at),
         distance_km=run.distance_km,
@@ -125,6 +131,10 @@ def _run_read(run: Run) -> RunRead:
     )
 
 
+def _real_run_clause():
+    return ~func.lower(Run.source).contains("demo") & ~func.lower(Run.source).contains("sample")
+
+
 def _shoe_read(shoe: Shoe, total_distance: float | int | None = None) -> ShoeRead:
     total = float(shoe.initial_distance_km) + float(total_distance or 0)
     rules = shoe.rules if isinstance(shoe.rules, dict) else {}
@@ -138,16 +148,6 @@ def _shoe_read(shoe: Shoe, total_distance: float | int | None = None) -> ShoeRea
         image_url=shoe.image_url,
         rules=rules,
         total_distance_km=round(total, 3),
-    )
-
-
-def _checkin_read(checkin: Checkin) -> CheckinRead:
-    return CheckinRead(
-        date=checkin.date,
-        sleep_hours=checkin.sleep_hours,
-        energy=checkin.energy,
-        soreness=checkin.soreness,
-        notes=checkin.notes,
     )
 
 
@@ -241,21 +241,25 @@ def _build_stats(
     }
     total_distance = 0.0
     total_duration = 0
+    total_moving = 0
     run_count = 0
     runs = db.scalars(select(Run).where(Run.owner_id == owner_id)).all()
     for run in runs:
-        run_date = _local_date(run.started_at)
+        if "demo" in run.source.lower() or "sample" in run.source.lower():
+            continue
+        run_date = _run_local_date(run)
         if run_date < start or run_date > end:
             continue
         distance = float(run.distance_km)
         total_distance += distance
         total_duration += int(run.duration_seconds)
+        total_moving += int(run.moving_seconds if run.moving_seconds is not None else run.duration_seconds)
         run_count += 1
         bucket = run_date if period == "week" else run_date - timedelta(days=run_date.weekday())
         if bucket in bucket_values:
             bucket_values[bucket]["distance_km"] += distance
             bucket_values[bucket]["run_count"] += 1
-    average_pace = total_duration / total_distance if total_distance > 0 else None
+    average_pace = total_moving / total_distance if total_distance > 0 else None
     buckets = [
         StatsBucket(
             label=bucket.strftime("%a") if period == "week" else _format_bucket_label(bucket),
@@ -348,9 +352,11 @@ def _privacy_safe_run_snapshot(run: Run, shoe: Shoe | None = None) -> dict[str, 
         "id": run.id,
         "title": run.title,
         "started_at": _display_iso(run.started_at),
-        "date": _local_date(run.started_at).isoformat(),
+        "date": _run_local_date(run).isoformat(),
+        "local_date": _run_local_date(run).isoformat(),
         "distance_km": float(run.distance_km),
         "duration_seconds": int(run.duration_seconds),
+        "moving_seconds": run.moving_seconds,
         "run_type": run.run_type,
         "avg_hr": run.avg_hr,
         "shoe_id": run.shoe_id,
@@ -463,11 +469,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/runs", response_model=list[RunRead])
     def list_runs(owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> list[RunRead]:
         runs = db.scalars(select(Run).where(Run.owner_id == owner_id).order_by(Run.started_at.desc(), Run.id.desc())).all()
-        return [_run_read(run) for run in runs]
+        return [_run_read(run) for run in runs if "demo" not in run.source.lower() and "sample" not in run.source.lower()]
 
     @app.get("/api/runs/{run_id}", response_model=RunRead)
     def get_run(run_id: int, owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> RunRead:
         return _run_read(_require_run(db, owner_id, run_id))
+
+    @app.post("/api/runs/reprocess")
+    def reprocess_runs(owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> dict[str, Any]:
+        from .run_enrichment import enrich_run
+        runs = db.scalars(select(Run).where(Run.owner_id == owner_id, _real_run_clause()).order_by(Run.started_at, Run.id)).all()
+        results = [enrich_run(db, run) for run in runs]
+        _commit(db)
+        return {"processed": len(results), "types_changed": sum(r["type_changed"] for r in results), "shoes_changed": sum(r["shoe_changed"] for r in results), "with_streams": sum(r["has_stream"] for r in results)}
 
     @app.post("/api/runs", response_model=RunRead, status_code=status.HTTP_201_CREATED)
     def create_run(payload: RunCreate, owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> RunRead:
@@ -483,6 +497,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             distance_km=payload.distance_km,
             duration_seconds=payload.duration_seconds,
             run_type=payload.run_type,
+            run_type_assignment="manual" if "run_type" in payload.model_fields_set else "unassigned",
             avg_hr=payload.avg_hr,
             shoe_id=payload.shoe_id,
             shoe_assignment="manual" if explicit_shoe else "unassigned",
@@ -504,6 +519,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run = _require_run(db, owner_id, run_id)
         data = payload.model_dump(exclude_unset=True)
         _reject_null_non_nullable(data, {"title", "started_at", "distance_km", "duration_seconds", "run_type", "notes", "source"})
+        if "run_type" in data:
+            run.run_type_assignment = "manual"
         if "shoe_id" in data:
             _require_shoe(db, owner_id, data["shoe_id"])
             run.shoe_assignment = "manual"
@@ -534,7 +551,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/runs/{run_id}/analysis")
     def analyze_run(run_id: int, owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> dict[str, Any]:
         run = _require_run(db, owner_id, run_id)
-        pace = float(run.duration_seconds) / float(run.distance_km)
+        pace = float(run.moving_seconds if run.moving_seconds is not None else run.duration_seconds) / float(run.distance_km)
         observations = [f"Distance was {run.distance_km:.2f} km.", f"Weighted average pace was {pace:.1f} seconds per km."]
         if run.avg_hr is not None:
             observations.append(f"Average heart rate was {run.avg_hr} bpm.")
@@ -552,7 +569,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.put("/api/runs/{run_id}/streams")
     def put_streams(run_id: int, payload: StreamsInput, owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> dict[str, Any]:
         run = _require_run(db, owner_id, run_id)
-        samples = [sample.model_dump(mode="json") for sample in payload.samples]
+        samples = [sample.model_dump(mode="json", exclude_unset=True) for sample in payload.samples]
         laps = [lap.model_dump(mode="json") for lap in payload.laps]
         # An omitted/empty laps array means "infer kilometer splits". Passing
         # [] to the analyzer selects explicit empty laps and suppresses those
@@ -574,7 +591,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         stream.analysis = analysis
         run.stream_available = True
         moving = analysis.get("moving_seconds")
-        run.moving_seconds = int(moving) if isinstance(moving, (int, float)) else None
+        run.moving_seconds = int(moving) if analysis.get("moving_time_available") and isinstance(moving, (int, float)) else None
+        from .run_enrichment import enrich_run
+        enrich_run(db, run)
+        analysis = stream.analysis
         _commit(db)
         result = dict(analysis)
         result.update({"run_id": run_id, "stream_available": True})
@@ -600,7 +620,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def list_shoes(owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> list[ShoeRead]:
         rows = db.execute(
             select(Shoe, func.coalesce(func.sum(Run.distance_km), 0.0))
-            .outerjoin(Run, (Run.shoe_id == Shoe.id) & (Run.owner_id == owner_id))
+            .outerjoin(Run, (Run.shoe_id == Shoe.id) & (Run.owner_id == owner_id) & _real_run_clause())
             .where(Shoe.owner_id == owner_id)
             .group_by(Shoe.id)
             .order_by(Shoe.name.asc(), Shoe.id.asc())
@@ -628,7 +648,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             setattr(shoe, field, value)
         _commit(db)
         db.refresh(shoe)
-        total_distance = db.scalar(select(func.coalesce(func.sum(Run.distance_km), 0.0)).where(Run.owner_id == owner_id, Run.shoe_id == shoe.id))
+        total_distance = db.scalar(select(func.coalesce(func.sum(Run.distance_km), 0.0)).where(Run.owner_id == owner_id, Run.shoe_id == shoe.id, _real_run_clause()))
         return _shoe_read(shoe, total_distance)
 
     @app.delete("/api/shoes/{shoe_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -644,16 +664,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         shoes = db.scalars(select(Shoe).where(Shoe.owner_id == owner_id)).all()
         mileage_rows = db.execute(
             select(Run.shoe_id, func.coalesce(func.sum(Run.distance_km), 0.0))
-            .where(Run.owner_id == owner_id, Run.shoe_id.is_not(None))
+            .where(Run.owner_id == owner_id, Run.shoe_id.is_not(None), _real_run_clause())
             .group_by(Run.shoe_id)
         ).all()
         mileage = {int(shoe_id): float(total) for shoe_id, total in mileage_rows if shoe_id is not None}
-        runs = db.scalars(select(Run).where(Run.owner_id == owner_id, Run.shoe_assignment != "manual").order_by(Run.started_at.asc(), Run.id.asc())).all()
+        runs = db.scalars(select(Run).where(Run.owner_id == owner_id, Run.shoe_assignment != "manual", _real_run_clause()).order_by(Run.started_at.asc(), Run.id.asc())).all()
         today = datetime.now(_local_timezone()).date()
         assignments: list[dict[str, Any]] = []
         updated = 0
         for run in runs:
-            candidates = suggest_for_run(run, shoes, mileage_by_shoe=mileage, run_date=_local_date(run.started_at), today=today)
+            candidates = suggest_for_run(run, shoes, mileage_by_shoe=mileage, run_date=_run_local_date(run), today=today)
             candidate_rows = [{"shoe_id": c.shoe_id, "shoe_name": c.shoe_name, "score": c.score, "confidence": c.confidence, "reason": c.reason} for c in candidates]
             best = candidates[0] if candidates else None
             prediction: dict[str, Any] = {
@@ -676,47 +696,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             assignments.append(prediction)
         if payload.apply:
             _commit(db)
-        manual_count = db.scalar(select(func.count(Run.id)).where(Run.owner_id == owner_id, Run.shoe_assignment == "manual")) or 0
+        manual_count = db.scalar(select(func.count(Run.id)).where(Run.owner_id == owner_id, Run.shoe_assignment == "manual", _real_run_clause())) or 0
         return {"apply": payload.apply, "assignments": assignments, "updated": updated, "skipped_manual": int(manual_count)}
 
     @app.get("/api/shoe-catalog")
     def shoe_catalog() -> list[dict[str, Any]]:
         return _safe_catalog()
-
-    @app.get("/api/checkins/{checkin_date}", response_model=CheckinRead)
-    def get_checkin(checkin_date: date, owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> CheckinRead:
-        checkin = db.scalar(select(Checkin).where(Checkin.owner_id == owner_id, Checkin.date == checkin_date))
-        if checkin is None:
-            raise HTTPException(status_code=404, detail="Check-in not found")
-        return _checkin_read(checkin)
-
-    @app.put("/api/checkins/{checkin_date}", response_model=CheckinRead)
-    def upsert_checkin(checkin_date: date, payload: CheckinInput, owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> CheckinRead:
-        if payload.date is not None and payload.date != checkin_date:
-            raise HTTPException(status_code=422, detail="Body date must match the URL date")
-        checkin = db.scalar(select(Checkin).where(Checkin.owner_id == owner_id, Checkin.date == checkin_date))
-        if checkin is None:
-            # Legacy SQLite databases receive an additive nullable ``id``
-            # column because their original primary key was ``date``.  Assign
-            # an id explicitly for that layout (and harmlessly for fresh
-            # layouts) so refreshes work without rebuilding or dropping the
-            # user's old table.
-            legacy_checkin_table = False
-            if db.bind is not None and db.bind.dialect.name == "sqlite":
-                primary_key = inspect(db.bind).get_pk_constraint("checkins").get("constrained_columns") or []
-                legacy_checkin_table = primary_key == ["date"]
-            checkin_kwargs: dict[str, Any] = {"owner_id": owner_id, "date": checkin_date}
-            if legacy_checkin_table:
-                checkin_kwargs["id"] = int((db.scalar(select(func.max(Checkin.id))) or 0) + 1)
-            checkin = Checkin(**checkin_kwargs)
-            db.add(checkin)
-        checkin.sleep_hours = payload.sleep_hours
-        checkin.energy = payload.energy
-        checkin.soreness = payload.soreness
-        checkin.notes = payload.notes
-        _commit(db)
-        db.refresh(checkin)
-        return _checkin_read(checkin)
 
     @app.get("/api/integrations", response_model=list[IntegrationRead])
     def integrations(owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> list[IntegrationRead]:
@@ -841,7 +826,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def export_backup(owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> dict[str, Any]:
         runs = db.scalars(select(Run).where(Run.owner_id == owner_id).order_by(Run.id.asc())).all()
         shoes = db.scalars(select(Shoe).where(Shoe.owner_id == owner_id).order_by(Shoe.id.asc())).all()
-        checkins = db.scalars(select(Checkin).where(Checkin.owner_id == owner_id).order_by(Checkin.date.asc())).all()
         exported_runs: list[dict[str, Any]] = []
         for run in runs:
             record = _run_read(run).model_dump(mode="json")
@@ -849,9 +833,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             exported_runs.append(record)
         exported_shoes = []
         for shoe in shoes:
-            total_distance = db.scalar(select(func.coalesce(func.sum(Run.distance_km), 0.0)).where(Run.owner_id == owner_id, Run.shoe_id == shoe.id))
+            total_distance = db.scalar(select(func.coalesce(func.sum(Run.distance_km), 0.0)).where(Run.owner_id == owner_id, Run.shoe_id == shoe.id, _real_run_clause()))
             exported_shoes.append(_shoe_read(shoe, total_distance).model_dump(mode="json"))
-        return {"version": 2, "exported_at": _display_iso(datetime.now(timezone.utc)), "runs": exported_runs, "shoes": exported_shoes, "checkins": [_checkin_read(checkin).model_dump(mode="json") for checkin in checkins]}
+        return {"version": 2, "exported_at": _display_iso(datetime.now(timezone.utc)), "runs": exported_runs, "shoes": exported_shoes}
 
     @app.post("/api/shares")
     def create_share(payload: ShareCreate, owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> dict[str, Any]:
@@ -866,7 +850,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 run = _require_run(db, owner_id, run_id)
             shoe = _find_shoe(db, owner_id, run.shoe_id)
             snapshot = {"kind": "run", "run": _privacy_safe_run_snapshot(run, shoe)}
-            anchor = _local_date(run.started_at)
+            anchor = _run_local_date(run)
         else:
             stats_snapshot = _build_stats(db, payload.kind, owner_id, anchor).model_dump(mode="json")
             snapshot = {"kind": payload.kind, "date": anchor.isoformat(), "stats": stats_snapshot}
@@ -909,6 +893,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from .google_routes import register_google_routes
 
     register_google_routes(app, settings)
+    register_coaching_routes(app)
+    from .weather import register_weather_routes
+    register_weather_routes(app)
+    from .bulk_runs import register_bulk_run_routes
+    register_bulk_run_routes(app)
     # Render serves the compiled personal app from the API origin so the
     # HttpOnly session cookie remains same-site.  The helper is a no-op for
     # backend-only test runs without frontend/dist.

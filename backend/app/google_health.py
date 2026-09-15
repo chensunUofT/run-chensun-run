@@ -12,7 +12,7 @@ legacy Fitbit Web API.
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import math
 import re
 import time
@@ -268,6 +268,20 @@ def _parse_duration(value: Any) -> float | None:
     return None
 
 
+def _parse_utc_offset_seconds(value: Any) -> int | None:
+    """Parse a Google duration-style UTC offset within one civil day."""
+
+    if isinstance(value, str):
+        match = re.fullmatch(r"\s*([+-]?[0-9]+(?:\.[0-9]+)?)s\s*", value)
+        if not match:
+            return None
+        value = match.group(1)
+    number = _parse_numeric(value)
+    if number is None or abs(number) > 86_400:
+        return None
+    return int(round(number))
+
+
 def _parse_numeric(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -321,6 +335,54 @@ def _format_filter_time(value: date | datetime | str, *, civil: bool) -> str:
     if not civil and re.fullmatch(r"\d{4}-\d{2}-\d{2}", current):
         return date.fromisoformat(current).isoformat() + "T00:00:00Z"
     return current
+
+
+def _date_only_bound(value: date | datetime | str | None) -> date | None:
+    """Return a date only for an ISO date literal without a time component."""
+
+    if isinstance(value, datetime):
+        return None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()):
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _calendar_filter_windows(
+    start_time: date | datetime | str | None,
+    end_time: date | datetime | str | None,
+) -> list[tuple[date | datetime | str, date | datetime | str]]:
+    """Split date-only ranges into at most one-calendar-month requests.
+
+    Fitbit-origin records have returned a sparse/generic ``WORKOUT`` summary
+    for broad exercise queries and a richer running summary for narrower
+    ranges.  Keeping each request to one calendar month makes the import
+    deterministic and bounds the provider's reconciliation window.  Datetime
+    ranges retain the existing single-request behavior because splitting them
+    would require choosing a civil timezone that the API does not expose.
+    """
+
+    first = _date_only_bound(start_time)
+    last = _date_only_bound(end_time)
+    if first is None or last is None or last <= first:
+        if start_time is None and end_time is None:
+            return [(None, None)]  # type: ignore[list-item]
+        return [(start_time, end_time)]  # type: ignore[list-item]
+    windows: list[tuple[date, date]] = []
+    cursor = first
+    while cursor < last:
+        if cursor.month == 12:
+            month_end = date(cursor.year + 1, 1, 1)
+        else:
+            month_end = date(cursor.year, cursor.month + 1, 1)
+        boundary = min(month_end, last)
+        windows.append((cursor, boundary))
+        cursor = boundary
+    return windows
 
 
 def _build_filter(
@@ -383,22 +445,142 @@ def _last_resource_component(name: Any) -> str | None:
     return name.rstrip("/").split("/")[-1] or None
 
 
-def _normalize_split(split: Mapping[str, Any]) -> dict[str, Any]:
-    interval = split
-    metrics = split.get("metricsSummary")
+def _normalize_split(split: Mapping[str, Any], *, source: str = "splitSummaries") -> dict[str, Any]:
+    """Normalize a provider split while retaining every provider field.
+
+    Google has emitted both ``splits`` and ``splitSummaries`` in real Fitbit
+    records.  They describe the same kind of lap but are distinct fields in
+    the current schema, so the source is carried through when both are
+    present.  ``raw`` remains the authoritative lossless provider object.
+    """
+
+    metrics = split.get("metricsSummary") or split.get("metrics_summary")
     metrics = metrics if isinstance(metrics, Mapping) else {}
-    distance_mm = _parse_numeric(metrics.get("distanceMillimeters"))
-    start_time = split.get("startTime")
-    end_time = split.get("endTime")
+    distance_mm = _parse_numeric(metrics.get("distanceMillimeters") or metrics.get("distance_millimeters"))
+    start_time = split.get("startTime") or split.get("start_time")
+    end_time = split.get("endTime") or split.get("end_time")
+    active_duration = _parse_duration(split.get("activeDuration") or split.get("active_duration"))
     return {
+        "source": source,
         "start_time": start_time,
         "end_time": end_time,
-        "active_duration_seconds": _parse_duration(split.get("activeDuration")),
+        "active_duration_seconds": active_duration,
         "elapsed_seconds": _duration_between(start_time, end_time),
         "distance_m": distance_mm / 1000.0 if distance_mm is not None else None,
-        "split_type": split.get("splitType"),
+        "distance_km": distance_mm / 1_000_000.0 if distance_mm is not None else None,
+        "split_type": split.get("splitType") or split.get("split_type"),
+        "metrics_summary": deepcopy(dict(metrics)),
         "raw": deepcopy(dict(split)),
     }
+
+
+_NESTED_EXERCISE_COLLECTIONS = (
+    "children",
+    "childExercises",
+    "activities",
+    "activitySegments",
+    "segments",
+    "laps",
+)
+
+
+def _component_time(component: Mapping[str, Any], key: str) -> Any:
+    interval = component.get("interval")
+    if isinstance(interval, Mapping):
+        value = interval.get(key)
+        if value is not None:
+            return value
+    snake_key = key[0].lower() + re.sub(r"([A-Z])", lambda match: "_" + match.group(1).lower(), key[1:])
+    return component.get(key) or component.get(snake_key)
+
+
+def _component_distance_m(component: Mapping[str, Any]) -> float | None:
+    metrics = component.get("metricsSummary") or component.get("metrics_summary")
+    metrics = metrics if isinstance(metrics, Mapping) else {}
+    for key, divisor in (
+        ("distanceMillimeters", 1000.0),
+        ("distance_millimeters", 1000.0),
+        ("distanceMeters", 1.0),
+        ("distance_meters", 1.0),
+        ("distanceM", 1.0),
+        ("distance_m", 1.0),
+        ("distanceKm", 0.001),
+        ("distance_km", 0.001),
+    ):
+        number = _parse_numeric(metrics.get(key))
+        if number is not None:
+            return number / divisor if divisor != 0 else None
+    for key, divisor in (
+        ("distanceMillimeters", 1000.0),
+        ("distance_millimeters", 1000.0),
+        ("distanceMeters", 1.0),
+        ("distance_meters", 1.0),
+        ("distanceM", 1.0),
+        ("distance_m", 1.0),
+        ("distanceKm", 0.001),
+        ("distance_km", 0.001),
+        ("distance", 1.0),
+    ):
+        number = _parse_numeric(component.get(key))
+        if number is not None:
+            return number / divisor if divisor != 0 else None
+    return None
+
+
+def _normalize_exercise_component(
+    component: Mapping[str, Any],
+    *,
+    source: str,
+    index: int,
+) -> dict[str, Any]:
+    """Normalize an undocumented nested workout component generically.
+
+    ``children``/``segments`` are not part of the current Google Health
+    ``Exercise`` schema, but Fitbit migrations and connector wrappers have
+    returned nested activity objects.  Keeping a small normalized projection
+    plus the exact raw object lets callers inspect those records without
+    dropping custom fields.
+    """
+
+    start_time = _component_time(component, "startTime")
+    end_time = _component_time(component, "endTime")
+    activity_type = (
+        component.get("exerciseType")
+        or component.get("exercise_type")
+        or component.get("activityType")
+        or component.get("activity_type")
+        or component.get("sport")
+        or component.get("type")
+    )
+    display_name = component.get("displayName") or component.get("display_name") or component.get("title")
+    return {
+        "source": source,
+        "index": index,
+        "activity_type": activity_type,
+        "display_name": display_name,
+        "started_at": start_time,
+        "ended_at": end_time,
+        "elapsed_seconds": _duration_between(start_time, end_time),
+        "active_duration_seconds": _parse_duration(
+            component.get("activeDuration") or component.get("active_duration")
+        ),
+        "distance_m": _component_distance_m(component),
+        "raw": deepcopy(dict(component)),
+    }
+
+
+def _normalize_nested_exercise_collections(exercise: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    normalized: dict[str, list[dict[str, Any]]] = {}
+    for collection_name in _NESTED_EXERCISE_COLLECTIONS:
+        values = exercise.get(collection_name)
+        if not isinstance(values, list):
+            continue
+        normalized[collection_name] = [
+            _normalize_exercise_component(item, source=collection_name, index=index)
+            for index, item in enumerate(values)
+            if isinstance(item, Mapping)
+        ]
+    return normalized
 
 
 def _normalize_session(point: Mapping[str, Any]) -> dict[str, Any]:
@@ -421,18 +603,48 @@ def _normalize_session(point: Mapping[str, Any]) -> dict[str, Any]:
     if average_hr is not None and average_hr.is_integer():
         average_hr = int(average_hr)
     default_name = exercise.get("displayName") or exercise.get("exerciseType") or "Exercise"
-    splits = exercise.get("splitSummaries")
-    if not isinstance(splits, list):
-        splits = exercise.get("splits")
-    normalized_splits = [
-        _normalize_split(split)
-        for split in (splits if isinstance(splits, list) else [])
-        if isinstance(split, Mapping)
-    ]
+    normalized_splits: list[dict[str, Any]] = []
+    for split_source in ("splitSummaries", "splits"):
+        splits = exercise.get(split_source)
+        if isinstance(splits, list):
+            normalized_splits.extend(
+                _normalize_split(split, source=split_source)
+                for split in splits
+                if isinstance(split, Mapping)
+            )
     events = exercise.get("exerciseEvents")
     normalized_events = [deepcopy(dict(event)) for event in events if isinstance(event, Mapping)] if isinstance(events, list) else []
+    nested = _normalize_nested_exercise_collections(exercise)
+    component_distances = [
+        component.get("distance_m")
+        for collection in nested.values()
+        for component in collection
+        if isinstance(component.get("distance_m"), (int, float))
+    ]
+    if distance_m is None and component_distances:
+        distance_m = sum(float(value) for value in component_distances)
+    if elapsed is None:
+        component_times = [
+            (component.get("started_at"), component.get("ended_at"))
+            for collection in nested.values()
+            for component in collection
+        ]
+        starts = [_parse_timestamp(start) for start, _ in component_times]
+        ends = [_parse_timestamp(end) for _, end in component_times]
+        starts = [value for value in starts if value is not None]
+        ends = [value for value in ends if value is not None]
+        if starts and ends:
+            elapsed = (max(ends) - min(starts)).total_seconds()
+    component_aliases = {
+        key: values
+        for key, values in nested.items()
+        if key in {"children", "childExercises", "activities", "activitySegments", "segments", "laps"}
+    }
     raw = deepcopy(dict(point))
-    return {
+    source_utc_offset_seconds = _parse_utc_offset_seconds(
+        interval.get("startUtcOffset") or interval.get("start_utc_offset")
+    )
+    normalized = {
         "provider": "google_health",
         "data_type": "exercise",
         "id": name,
@@ -444,6 +656,7 @@ def _normalize_session(point: Mapping[str, Any]) -> dict[str, Any]:
         "activity_type": exercise.get("exerciseType"),
         "started_at": start_time,
         "ended_at": end_time,
+        "source_utc_offset_seconds": source_utc_offset_seconds,
         "elapsed_seconds": elapsed,
         "duration_seconds": elapsed,
         "active_duration_seconds": active_duration,
@@ -460,8 +673,93 @@ def _normalize_session(point: Mapping[str, Any]) -> dict[str, Any]:
         "has_gps": metadata.get("hasGps"),
         "exercise_events": normalized_events,
         "splits": normalized_splits,
+        "metrics_summary": deepcopy(dict(metrics)),
+        "exercise_metadata": deepcopy(dict(metadata)),
+        "notes": exercise.get("notes"),
+        "data_source": deepcopy(dict(point.get("dataSource"))) if isinstance(point.get("dataSource"), Mapping) else {},
         "raw": raw,
     }
+    normalized.update(component_aliases)
+    return normalized
+
+
+def _session_identity(session: Mapping[str, Any]) -> str:
+    """Return the stable provider identity used to merge overlapping pages."""
+
+    for key in ("provider_id", "source_id", "id", "resource_name"):
+        value = session.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"{key}:{value.strip()}"
+    # A malformed provider page should still be retained, but records without
+    # an identity cannot be safely merged with one another.
+    fallback = (
+        session.get("started_at"),
+        session.get("ended_at"),
+        session.get("activity_type"),
+        session.get("title"),
+    )
+    return "fallback:" + "|".join(str(value or "") for value in fallback)
+
+
+def _session_richness(session: Mapping[str, Any]) -> tuple[int, ...]:
+    """Rank duplicate exercise summaries by fields useful to Runwise.
+
+    The same Fitbit-origin exercise ID can be returned as a generic,
+    distance-less ``WORKOUT`` for a broad query and as a populated ``RUNNING``
+    record for a one-month query.  Distance is the strongest signal, followed
+    by the concrete activity type, GPS metadata, splits, and other detail.
+    """
+
+    distance = _parse_numeric(session.get("distance_m"))
+    activity = str(session.get("activity_type") or "").strip().upper()
+    known_type = bool(activity and activity not in {"WORKOUT", "EXERCISE", "UNKNOWN"})
+    metrics = session.get("metrics_summary")
+    splits = session.get("splits")
+    events = session.get("exercise_events")
+    components = sum(
+        len(value)
+        for key in _NESTED_EXERCISE_COLLECTIONS
+        for value in [session.get(key)]
+        if isinstance(value, list)
+    )
+    raw = session.get("raw")
+    return (
+        int(distance is not None and distance > 0),
+        int(known_type),
+        int(session.get("has_gps") is True),
+        min(len(splits), 100) if isinstance(splits, list) else 0,
+        min(components, 100),
+        min(len(events), 100) if isinstance(events, list) else 0,
+        min(len(metrics), 100) if isinstance(metrics, Mapping) else 0,
+        int(session.get("active_duration_seconds") is not None),
+        int(session.get("duration_seconds") is not None),
+        min(len(raw), 100) if isinstance(raw, Mapping) else 0,
+    )
+
+
+def _merge_session_pages(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Dedupe overlapping exercise pages while preferring richer summaries."""
+
+    selected: dict[str, tuple[dict[str, Any], int]] = {}
+    for position, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        identity = _session_identity(record)
+        current = selected.get(identity)
+        if current is None or _session_richness(record) > _session_richness(current[0]):
+            selected[identity] = (record, position)
+    ordered = list(selected.values())
+
+    def sort_key(item: tuple[dict[str, Any], int]) -> tuple[int, float, int]:
+        timestamp = _parse_timestamp(item[0].get("started_at"))
+        return (
+            int(timestamp is not None),
+            timestamp.timestamp() if timestamp is not None else float("-inf"),
+            -item[1],
+        )
+
+    ordered.sort(key=sort_key, reverse=True)
+    return [record for record, _ in ordered]
 
 
 def _normalize_sample(data_type: str, point: Mapping[str, Any]) -> dict[str, Any]:
@@ -525,42 +823,216 @@ def _normalize_sample(data_type: str, point: Mapping[str, Any]) -> dict[str, Any
     }
 
 
-def _parse_tcx_points(raw_tcx: bytes) -> list[dict[str, Any]]:
+def _tcx_local_name(tag: Any) -> str:
+    return str(tag).rsplit("}", 1)[-1]
+
+
+def _tcx_metadata(element: ET.Element, *, skip: frozenset[str] = frozenset()) -> Any:
+    """Convert a TCX node to a bounded, namespace-free metadata object.
+
+    Trackpoints are deliberately excluded by callers because the normalized
+    route already carries them as point records.  Every other child and
+    attribute is retained, including extension fields from device vendors.
+    Duplicate child names become arrays rather than silently overwriting one
+    another.
+    """
+
+    result: dict[str, Any] = {
+        str(key): str(value)
+        for key, value in element.attrib.items()
+        if _tcx_local_name(key) not in skip
+    }
+    children = [child for child in list(element) if _tcx_local_name(child.tag) not in skip]
+    if not children:
+        text = (element.text or "").strip()
+        return text if text else result
+    for child in children:
+        key = _tcx_local_name(child.tag)
+        value = _tcx_metadata(child, skip=skip)
+        if key in result:
+            existing = result[key]
+            if not isinstance(existing, list):
+                existing = [existing]
+            existing.append(value)
+            result[key] = existing
+        else:
+            result[key] = value
+    return result
+
+
+def _parse_tcx_trackpoint(element: ET.Element) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for child in element.iter():
+        key = _tcx_local_name(child.tag)
+        if key == "HeartRateBpm":
+            for value in child.iter():
+                if _tcx_local_name(value.tag) == "Value":
+                    try:
+                        values["HeartRateBpm"] = float(value.text or "")
+                    except (TypeError, ValueError):
+                        pass
+        if child is element or child.text is None:
+            continue
+        text = child.text.strip()
+        if key in {"LatitudeDegrees", "LongitudeDegrees", "AltitudeMeters", "DistanceMeters"}:
+            try:
+                values[key] = float(text)
+            except (TypeError, ValueError):
+                values[key] = None
+        elif key == "Time":
+            values[key] = text
+    lat = values.get("LatitudeDegrees")
+    lon = values.get("LongitudeDegrees")
+    return {
+        "timestamp": values.get("Time"),
+        "lat": lat,
+        "lon": lon,
+        "altitude_m": values.get("AltitudeMeters"),
+        "heart_rate": values.get("HeartRateBpm"),
+        "distance_m": values.get("DistanceMeters"),
+        "raw": deepcopy(values),
+    }
+
+
+def _parse_tcx_document(raw_tcx: bytes) -> dict[str, Any]:
+    """Parse route points plus TCX activity/lap hierarchy and metadata."""
+
     try:
         root = ET.fromstring(raw_tcx)
     except (ET.ParseError, TypeError) as exc:
         raise GoogleHealthResponseError("Google Health returned invalid TCX XML") from exc
 
     points: list[dict[str, Any]] = []
-    for element in root.iter():
-        if element.tag.rsplit("}", 1)[-1] != "Trackpoint":
-            continue
-        values: dict[str, Any] = {}
-        for child in element.iter():
-            key = child.tag.rsplit("}", 1)[-1]
-            if child is element or child.text is None:
-                continue
-            text = child.text.strip()
-            if key in {"LatitudeDegrees", "LongitudeDegrees", "AltitudeMeters", "DistanceMeters"}:
-                try:
-                    values[key] = float(text)
-                except ValueError:
-                    values[key] = None
-            elif key == "Time":
-                values[key] = text
-        lat = values.get("LatitudeDegrees")
-        lon = values.get("LongitudeDegrees")
-        points.append(
+    activities: list[dict[str, Any]] = []
+    laps: list[dict[str, Any]] = []
+    seen_trackpoints: set[int] = set()
+    activity_elements = [element for element in root.iter() if _tcx_local_name(element.tag) == "Activity"]
+    for activity_index, activity in enumerate(activity_elements):
+        sport = activity.attrib.get("Sport") or activity.attrib.get("sport")
+        activity_id: Any = None
+        for child in activity.iter():
+            if _tcx_local_name(child.tag) == "Id" and (child.text or "").strip():
+                activity_id = child.text.strip()
+                break
+        activity_laps: list[dict[str, Any]] = []
+        lap_elements = [element for element in activity if _tcx_local_name(element.tag) == "Lap"]
+        # Some exporters wrap Lap in a vendor node.  Include those while
+        # keeping the direct-child result order stable.
+        if not lap_elements:
+            lap_elements = [element for element in activity.iter() if _tcx_local_name(element.tag) == "Lap"]
+        for lap_index, lap in enumerate(lap_elements):
+            trackpoint_elements = [
+                element for element in lap.iter() if _tcx_local_name(element.tag) == "Trackpoint"
+            ]
+            lap_points: list[dict[str, Any]] = []
+            for trackpoint in trackpoint_elements:
+                seen_trackpoints.add(id(trackpoint))
+                point = _parse_tcx_trackpoint(trackpoint)
+                point["activity_index"] = activity_index
+                point["lap_index"] = lap_index
+                points.append(point)
+                lap_points.append(point)
+            start_time = lap.attrib.get("StartTime") or lap.attrib.get("startTime")
+            if start_time is None:
+                start_node = next(
+                    (child for child in lap if _tcx_local_name(child.tag) in {"StartTime", "startTime"}),
+                    None,
+                )
+                start_time = (start_node.text or "").strip() if start_node is not None else None
+            total_time: float | None = None
+            distance_m: float | None = None
+            lap_metadata = _tcx_metadata(lap, skip=frozenset({"Track", "Trackpoint"}))
+            if isinstance(lap_metadata, dict):
+                distance_m = _parse_numeric(lap_metadata.get("DistanceMeters")) or distance_m
+                total_time = _parse_numeric(lap_metadata.get("TotalTimeSeconds")) or total_time
+            last_timestamp = next(
+                (point.get("timestamp") for point in reversed(lap_points) if point.get("timestamp")),
+                None,
+            )
+            end_time = last_timestamp
+            if start_time is not None and total_time is not None:
+                start_dt = _parse_timestamp(start_time)
+                if start_dt is not None:
+                    calculated_end = (start_dt + timedelta(seconds=total_time)).isoformat().replace("+00:00", "Z")
+                    last_dt = _parse_timestamp(last_timestamp)
+                    if last_dt is None or last_dt < start_dt + timedelta(seconds=total_time):
+                        end_time = calculated_end
+            if distance_m is None:
+                point_distances = [
+                    float(point["distance_m"])
+                    for point in lap_points
+                    if isinstance(point.get("distance_m"), (int, float))
+                    and math.isfinite(float(point["distance_m"]))
+                ]
+                distance_m = max(point_distances) if point_distances else None
+            lap_record = {
+                "activity_index": activity_index,
+                "lap_index": lap_index,
+                "start_time": start_time,
+                "end_time": end_time,
+                "elapsed_seconds": total_time,
+                "distance_m": distance_m,
+                "calories": _parse_numeric(lap_metadata.get("Calories")) if isinstance(lap_metadata, dict) else None,
+                "intensity": lap_metadata.get("Intensity") if isinstance(lap_metadata, dict) else None,
+                "trigger_method": lap_metadata.get("TriggerMethod") if isinstance(lap_metadata, dict) else None,
+                "metadata": deepcopy(lap_metadata) if isinstance(lap_metadata, dict) else {},
+                "raw": deepcopy(lap_metadata),
+            }
+            laps.append(lap_record)
+            activity_laps.append(lap_record)
+        activity_metadata = _tcx_metadata(activity, skip=frozenset({"Lap", "Track", "Trackpoint"}))
+        activities.append(
             {
-                "timestamp": values.get("Time"),
-                "lat": lat,
-                "lon": lon,
-                "altitude_m": values.get("AltitudeMeters"),
-                "distance_m": values.get("DistanceMeters"),
-                "raw": deepcopy(values),
+                "activity_index": activity_index,
+                "sport": sport,
+                "id": activity_id,
+                "laps": activity_laps,
+                "metadata": deepcopy(activity_metadata) if isinstance(activity_metadata, dict) else {},
+                "raw": deepcopy(activity_metadata),
             }
         )
-    return points
+
+    # A few exporters put Trackpoint elements outside Activity/Lap.  Keep
+    # those points rather than silently dropping them.
+    for element in root.iter():
+        if _tcx_local_name(element.tag) != "Trackpoint" or id(element) in seen_trackpoints:
+            continue
+        points.append(_parse_tcx_trackpoint(element))
+
+    distances = [
+        float(lap["distance_m"])
+        for lap in laps
+        if isinstance(lap.get("distance_m"), (int, float)) and math.isfinite(float(lap["distance_m"]))
+    ]
+    total_distance = sum(distances) if distances else None
+    if total_distance is None:
+        point_distances = [
+            float(point["distance_m"])
+            for point in points
+            if isinstance(point.get("distance_m"), (int, float)) and math.isfinite(float(point["distance_m"]))
+        ]
+        total_distance = max(point_distances) if point_distances else None
+    durations = [
+        float(lap["elapsed_seconds"])
+        for lap in laps
+        if isinstance(lap.get("elapsed_seconds"), (int, float)) and math.isfinite(float(lap["elapsed_seconds"]))
+    ]
+    point_times = [_parse_timestamp(point.get("timestamp")) for point in points]
+    point_times = [value for value in point_times if value is not None]
+    point_elapsed = (max(point_times) - min(point_times)).total_seconds() if len(point_times) >= 2 else None
+    elapsed = sum(durations) if durations else point_elapsed
+    return {
+        "points": points,
+        "laps": laps,
+        "activities": activities,
+        "activity_sports": [activity.get("sport") for activity in activities if activity.get("sport")],
+        "total_distance_m": total_distance,
+        "elapsed_seconds": elapsed,
+    }
+
+
+def _parse_tcx_points(raw_tcx: bytes) -> list[dict[str, Any]]:
+    return _parse_tcx_document(raw_tcx)["points"]
 
 
 class GoogleHealthClient:
@@ -842,16 +1314,35 @@ class GoogleHealthClient:
                 raise GoogleHealthResponseError("Google Health route JSON must be an object", details=raw_json)
             tcx_data = raw_json.get("tcxData")
             route_bytes = tcx_data.encode("utf-8") if isinstance(tcx_data, str) else b""
+            parsed = _parse_tcx_document(route_bytes) if route_bytes else {
+                "points": [],
+                "laps": [],
+                "activities": [],
+                "activity_sports": [],
+                "total_distance_m": None,
+                "elapsed_seconds": None,
+            }
             return {
                 "exercise_id": identifier,
-                "points": _parse_tcx_points(route_bytes) if route_bytes else [],
+                "points": parsed["points"],
+                "laps": parsed["laps"],
+                "activities": parsed["activities"],
+                "activity_sports": parsed["activity_sports"],
+                "total_distance_m": parsed["total_distance_m"],
+                "elapsed_seconds": parsed["elapsed_seconds"],
                 "raw": route_bytes,
                 "raw_provider_json": deepcopy(raw_json),
                 "content_type": content_type or "application/json",
             }
+        parsed = _parse_tcx_document(raw_bytes)
         return {
             "exercise_id": identifier,
-            "points": _parse_tcx_points(raw_bytes),
+            "points": parsed["points"],
+            "laps": parsed["laps"],
+            "activities": parsed["activities"],
+            "activity_sports": parsed["activity_sports"],
+            "total_distance_m": parsed["total_distance_m"],
+            "elapsed_seconds": parsed["elapsed_seconds"],
             "raw": raw_bytes,
             "content_type": content_type or "application/tcx+xml",
         }
@@ -879,32 +1370,63 @@ class GoogleHealthClient:
         if max_pages <= 0:
             raise ValueError("max_pages must be positive")
         errors: list[dict[str, Any]] = []
-        sessions: list[dict[str, Any]] = []
+        session_records: list[dict[str, Any]] = []
         raw_pages: dict[str, Any] = {"sessions": [], "samples": {}, "routes": []}
         pages: dict[str, int] = {"sessions": 0, "samples": 0, "routes": 0}
         complete: dict[str, bool] = {"sessions": False, "samples": not include_samples, "routes": not include_routes}
 
-        session_token: str | None = None
-        for _ in range(max_pages):
-            try:
-                page = self.fetch_activity_sessions(
-                    start_time,
-                    end_time,
-                    page_token=session_token,
-                    page_size=page_size,
+        # Exercise queries are intentionally split on calendar-month
+        # boundaries.  Google Health has returned the same Fitbit exercise ID
+        # as a sparse WORKOUT summary for a broad range and as a populated
+        # RUNNING summary for a one-month range.  Each window is paginated
+        # independently, then duplicate IDs are merged by richness below.
+        session_windows = _calendar_filter_windows(start_time, end_time)
+        session_window_status: list[dict[str, Any]] = []
+        for window_start, window_end in session_windows:
+            window_complete = False
+            session_token: str | None = None
+            seen_tokens: set[str] = set()
+            window_context = {
+                "window_start": _format_filter_time(window_start, civil=True) if window_start is not None else None,
+                "window_end": _format_filter_time(window_end, civil=True) if window_end is not None else None,
+            }
+            for _ in range(max_pages):
+                if session_token is not None:
+                    if session_token in seen_tokens:
+                        errors.append({"stream": "sessions", "error": "page_token_cycle", **window_context})
+                        break
+                    seen_tokens.add(session_token)
+                try:
+                    page = self.fetch_activity_sessions(
+                        window_start,
+                        window_end,
+                        page_token=session_token,
+                        page_size=page_size,
+                    )
+                except GoogleHealthError as exc:
+                    errors.append(self._error_record("sessions", exc, **window_context))
+                    break
+                pages["sessions"] += 1
+                session_records.extend(page["sessions"])
+                raw_pages["sessions"].append(page["raw"])
+                session_token = page["next_page_token"]
+                if session_token is None:
+                    window_complete = True
+                    break
+            else:
+                errors.append(
+                    {
+                        "stream": "sessions",
+                        "error": "page_limit_exceeded",
+                        "message": f"more than {max_pages} pages",
+                        **window_context,
+                    }
                 )
-            except GoogleHealthError as exc:
-                errors.append(self._error_record("sessions", exc))
-                break
-            pages["sessions"] += 1
-            sessions.extend(page["sessions"])
-            raw_pages["sessions"].append(page["raw"])
-            session_token = page["next_page_token"]
-            if session_token is None:
-                complete["sessions"] = True
-                break
-        else:
-            errors.append({"stream": "sessions", "error": "page_limit_exceeded", "message": f"more than {max_pages} pages"})
+            session_window_status.append({**window_context, "complete": window_complete})
+        sessions = _merge_session_pages(session_records)
+        complete["sessions"] = bool(session_window_status) and all(
+            bool(window.get("complete")) for window in session_window_status
+        )
 
         # A bounded window around returned sessions keeps a no-argument cold
         # load from asking every telemetry point in the account.  The bound is
@@ -959,9 +1481,21 @@ class GoogleHealthClient:
         if include_routes:
             complete["routes"] = True
             for session in sessions:
-                if not session.get("has_gps"):
+                activity_type = str(session.get("activity_type") or "").strip().upper()
+                # ``hasGps`` is optional in real Fitbit-origin records. Probe
+                # generic exercises as well because TCX is the authoritative
+                # sport/distance source for custom workouts.
+                if (
+                    session.get("has_gps") is not True
+                    and not re.search(r"(?:RUN|JOG|TREADMILL)", activity_type)
+                    and activity_type not in {"WORKOUT", "EXERCISE", "UNKNOWN", ""}
+                ):
                     continue
                 resource_name = session.get("resource_name") or session.get("id")
+                if not resource_name:
+                    errors.append({"stream": "route", "error": "missing_resource_name"})
+                    complete["routes"] = False
+                    continue
                 try:
                     route = self.export_exercise_tcx(str(resource_name))
                 except (GoogleHealthError, ValueError) as exc:
@@ -1000,6 +1534,8 @@ class GoogleHealthClient:
                 "requested_end": requested_end,
                 "oldest_returned": oldest,
                 "newest_returned": newest,
+                "session_windows": session_window_status,
+                "session_window_count": len(session_window_status),
                 "pages": pages,
                 "record_counts": {
                     "sessions": len(sessions),

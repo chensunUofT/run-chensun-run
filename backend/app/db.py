@@ -97,9 +97,11 @@ class Run(Base):
     owner_id: Mapped[str] = mapped_column(OWNER_ID_TYPE, nullable=False)
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_utc_offset_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     distance_km: Mapped[float] = mapped_column(Float, nullable=False)
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     run_type: Mapped[str] = mapped_column(String(40), nullable=False, default="run")
+    run_type_assignment: Mapped[str] = mapped_column(String(20), nullable=False, default="unassigned")
     avg_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
     shoe_id: Mapped[int | None] = mapped_column(
         Integer,

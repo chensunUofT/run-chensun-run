@@ -213,7 +213,7 @@ def test_route_export_appends_alt_media_and_parses_tcx_trackpoints(resource_user
       <Activities><Activity Sport="Running"><Lap StartTime="2026-04-20T08:00:00Z">
         <Track><Trackpoint><Time>2026-04-20T08:00:00Z</Time><Position>
           <LatitudeDegrees>37.7749</LatitudeDegrees><LongitudeDegrees>-122.4194</LongitudeDegrees>
-        </Position><AltitudeMeters>15.0</AltitudeMeters><DistanceMeters>0.0</DistanceMeters></Trackpoint></Track>
+        </Position><AltitudeMeters>15.0</AltitudeMeters><DistanceMeters>0.0</DistanceMeters><HeartRateBpm><Value>142</Value></HeartRateBpm></Trackpoint></Track>
       </Lap></Activity></Activities>
     </TrainingCenterDatabase>'''
 
@@ -230,6 +230,8 @@ def test_route_export_appends_alt_media_and_parses_tcx_trackpoints(resource_user
     assert route["content_type"] == "application/tcx+xml"
     assert route["points"][0]["lat"] == pytest.approx(37.7749)
     assert route["points"][0]["lon"] == pytest.approx(-122.4194)
+    assert route["points"][0]["heart_rate"] == 142
+    assert route["points"][0]["altitude_m"] == 15
     assert route["raw"] == tcx
 
 
@@ -304,3 +306,18 @@ def test_missing_active_duration_remains_unknown() -> None:
     http_client.close()
     assert session['active_duration_seconds'] is None
     assert session['duration_seconds'] == session['elapsed_seconds'] == 2100
+
+
+def test_history_uses_monthly_windows_and_deduplicates_boundaries() -> None:
+    filters = []
+    def handler(request: httpx.Request) -> httpx.Response:
+        filters.append(request.url.params['filter'])
+        return httpx.Response(200, json={'dataPoints': [SESSION_POINT]})
+    client, http_client = _client(handler)
+    result = client.fetch_activity(start_time='2026-03-01', end_time='2026-07-01', include_samples=False)
+    http_client.close()
+    assert len(filters) == 4
+    assert '2026-04-01' in filters[0]
+    assert '2026-06-01' in filters[-1]
+    assert len(result['sessions']) == 1
+    assert result['coverage']['sessions_complete'] is True

@@ -93,11 +93,6 @@ def test_shoe_edit_computes_total_and_delete_unlinks_runs(client):
 def test_validation_rejects_invalid_values_and_csv_headers(client):
     invalid_run = run_payload(distance=-1, duration=100)
     assert client.post("/api/runs", json=invalid_run).status_code == 422
-    invalid_checkin = client.put(
-        "/api/checkins/2026-09-14",
-        json={"sleep_hours": 8, "energy": 6, "soreness": 2, "notes": ""},
-    )
-    assert invalid_checkin.status_code == 422
     unknown_header = "started_at,distance_km,duration_seconds,unexpected\n2026-09-14T12:00:00Z,5,1000,x\n"
     imported = client.post(
         "/api/import/csv",
@@ -113,7 +108,8 @@ def test_demo_seed_is_opt_in_and_idempotent(client):
     assert first.status_code == second.status_code == 200
     assert first.json()["seeded"] == 3
     assert second.json() == {"seeded": 0, "skipped": 3, "run_ids": []}
-    assert all(run["source"] == "demo" for run in client.get("/api/runs").json())
+    assert client.get("/api/runs").json() == []
+    assert client.get("/api/stats").json()["run_count"] == 0
 
 
 def test_external_browser_origins_cannot_write_local_data(client):
@@ -161,3 +157,8 @@ def test_render_origin_defaults(monkeypatch):
     assert settings.cors_origins == ('https://runwise.example',)
     assert settings.allowed_hosts == ('runwise.example',)
     assert settings.google_redirect_uri == 'https://runwise.example/api/integrations/google-health/callback'
+
+
+def test_manual_status_api_is_removed(client):
+    assert client.put("/api/checkins/2026-09-14", json={"energy": 3, "soreness": 2}).status_code == 404
+    assert "/api/checkins/{checkin_date}" not in client.get("/openapi.json").json()["paths"]

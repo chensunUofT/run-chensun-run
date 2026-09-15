@@ -16,3 +16,6 @@ backend/data/
 work/
 *.log
 .DS_Store
+
+# Local Supabase CLI metadata
+supabase/.temp/

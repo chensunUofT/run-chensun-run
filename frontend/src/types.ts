@@ -4,6 +4,8 @@ export type Run = {
   id: RunId
   title: string
   started_at: string
+  /** Activity date in the source's recorded local timezone, when available. */
+  local_date?: string | null
   distance_km: number
   duration_seconds: number
   moving_seconds?: number | null
@@ -78,16 +80,6 @@ export type Shoe = {
 
 export type ShoePayload = Omit<Shoe, 'id' | 'total_distance_km'>
 
-export type Checkin = {
-  date: string
-  sleep_hours: number | null
-  energy: number
-  soreness: number
-  notes: string
-}
-
-export type CheckinPayload = Omit<Checkin, 'date'>
-
 export type Integration = {
   id: string
   name: string
@@ -96,6 +88,7 @@ export type Integration = {
 }
 
 export type ShoeCatalogItem = {
+  colorway?: string | null
   id: string
   name: string
   brand: string
@@ -154,6 +147,7 @@ export type PublicShareSnapshot = {
 }
 
 export type RunStreamSample = {
+  altitude_m?: number | null
   elapsed_seconds?: number | null
   distance_m?: number | null
   distance_km?: number | null

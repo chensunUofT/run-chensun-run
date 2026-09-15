@@ -1,0 +1,15 @@
+{
+  "statsPeriodPicker": {
+    "period": "统计周期",
+    "week": "周",
+    "month": "月",
+    "chooseWeek": "选择周",
+    "chooseMonth": "选择月份",
+    "previous": "上一个周期",
+    "next": "下一个周期",
+    "weekRange": "周起始于 {date}",
+    "monthRange": "{date}",
+    "invalidWeek": "请选择有效的周",
+    "invalidMonth": "请选择有效的月份"
+  }
+}

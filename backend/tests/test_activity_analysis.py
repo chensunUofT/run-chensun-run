@@ -149,3 +149,72 @@ def test_explicit_laps_are_preserved_and_validated() -> None:
 def test_invalid_samples_are_rejected(samples: list[dict[str, float]], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         analyze_activity(samples)
+
+
+def test_lap_nanosecond_duration_rounding():
+    samples = _samples([0, 446.642682], [0, 1000])
+    lap = {'start_seconds': 0, 'end_seconds': 446.642682, 'elapsed_seconds': 446.642682, 'distance_m': 1000, 'moving_seconds': 446.642682432}
+    result = analyze_activity(samples, laps=[lap])
+    assert result['splits'][0]['moving_seconds'] == pytest.approx(446.642682)
+    with pytest.raises(ValueError, match='cannot exceed'):
+        analyze_activity(samples, laps=[{**lap, 'moving_seconds': 447}])
+
+
+def test_walking_speed_counts_as_moving() -> None:
+    # 1.0 m/s is a brisk walk, but it is still movement for net moving time.
+    result = analyze_activity(
+        [
+            {"elapsed_seconds": 0, "distance_m": 0},
+            {"elapsed_seconds": 20, "distance_m": 20},
+            {"elapsed_seconds": 40, "distance_m": 40},
+        ]
+    )
+
+    assert result["moving_seconds"] == 40
+    assert result["stopped_seconds"] == 0
+    assert result["moving_pace_seconds_per_km"] == pytest.approx(1_000)
+
+
+def test_coordinate_jitter_does_not_create_distance_or_moving_time() -> None:
+    result = analyze_activity(
+        [
+            {"elapsed_seconds": 0, "distance_m": 0, "latitude": 40.0, "longitude": -74.0},
+            {"elapsed_seconds": 5, "distance_m": 5, "latitude": 40.00002, "longitude": -74.00001},
+            {"elapsed_seconds": 10, "distance_m": 10, "latitude": 39.99999, "longitude": -74.00002},
+            {"elapsed_seconds": 15, "distance_m": 15, "latitude": 40.00001, "longitude": -74.00001},
+            {"elapsed_seconds": 20, "distance_m": 20, "latitude": 40.0, "longitude": -74.0},
+        ]
+    )
+
+    assert result["moving_seconds"] == 0
+    assert result["distance_m"] == 0
+    assert "gps_jitter_smoothed" in result["quality_flags"]
+    assert result["moving_time_confidence_label"] == "unknown"
+
+
+def test_gps_distance_delta_is_used_when_cumulative_distance_is_missing() -> None:
+    result = analyze_activity(
+        [
+            {"elapsed_seconds": 0, "latitude": 40.0, "longitude": -74.0},
+            {"elapsed_seconds": 10, "latitude": 40.0001, "longitude": -74.0},
+            {"elapsed_seconds": 20, "latitude": 40.0002, "longitude": -74.0},
+        ]
+    )
+
+    assert result["distance_source"] == "gps"
+    assert result["distance_m"] == pytest.approx(22.24, rel=0.01)
+    assert result["moving_seconds"] == 20
+
+
+def test_reported_active_duration_is_retained_without_overriding_net_time() -> None:
+    result = analyze_activity(
+        _samples([0, 10, 20], [0, 100, 200]),
+        reported_moving_seconds=12,
+    )
+
+    assert result["moving_seconds"] == 20
+    assert result["stopped_seconds"] == 0
+    assert result["provider_moving_seconds"] == 12
+    assert result["moving_time_source"] == "distance_speed_threshold"
+    assert result["moving_time_estimated"] is True
+    assert "provider_moving_time_available" in result["quality_flags"]

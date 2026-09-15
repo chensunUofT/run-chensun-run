@@ -157,6 +157,7 @@ class RunRead(RunBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    local_date: DateValue | None = None
     shoe_assignment: Literal["manual", "inferred", "unassigned"] = "unassigned"
     shoe_confidence: float | None = None
     shoe_reason: str | None = None
@@ -283,31 +284,6 @@ class ShoeRead(BaseModel):
     total_distance_km: float
 
 
-class CheckinInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    date: DateValue | None = None
-    sleep_hours: float | None = Field(default=None, ge=0, le=24)
-    energy: int = Field(ge=1, le=5)
-    soreness: int = Field(ge=1, le=5)
-    notes: str = Field(default="", max_length=2000)
-
-    @field_validator("notes")
-    @classmethod
-    def clean_checkin_notes(cls, value: str) -> str:
-        return value.strip()
-
-
-class CheckinRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    date: DateValue
-    sleep_hours: float | None
-    energy: int
-    soreness: int
-    notes: str
-
-
 class StatsBucket(BaseModel):
     label: str
     distance_km: float
@@ -355,6 +331,7 @@ class StreamSample(BaseModel):
     elapsed_seconds: float = Field(ge=0, le=86_400)
     distance_m: float = Field(ge=0, le=2_000_000)
     heart_rate: int | None = Field(default=None, ge=20, le=260)
+    altitude_m: float | None = Field(default=None, allow_inf_nan=False)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
 
