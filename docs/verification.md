@@ -1,4 +1,14 @@
-# Verification — 2026-09-15
+# Verification
+
+## Database restoration — 2026-09-26
+
+Supabase reported INACTIVE. A restore request completed with ACTIVE_HEALTHY. Administrative queries found 321 runs, 314 streams, and four shoes. The dedicated `runwise_personal` runtime role also connected successfully and saw 321 runs. A production-config application test against that database returned 200 for health and 401 for anonymous run and coaching requests. No plan upgrade was performed.
+
+Render environment configuration was subsequently approved and saved. Deployment `dep-das5hgvpn0mc73etm2mg` became live. Public HTTPS checks returned 200 for `/` and `/api/health`, and 401 for anonymous `/api/runs`, `/api/coaching`, and `/api/shoes`. The Google Cloud callback was saved after approval. A real browser login completed and the cloud interface displayed all 321 existing activities. Free-plan availability is still subject to inactivity pausing.
+
+The owner selected personal Strava bulk-export uploads instead of API integration. No Strava API credentials were created and no real Strava archive has been imported yet. The legacy Google workflow is now manual only in this source tree.
+
+## Previous verification — 2026-09-15
 
 ## Application checks
 
@@ -18,7 +28,7 @@ TCX, standalone distance intervals, and heart-rate pages were independently read
 
 The dedicated Supabase runtime role authenticated successfully. The personal dataset, compressed streams, shoes, encrypted Google connection, and coaching records were copied in one transaction. Counts were independently verified and identity sequences reset administratively. Security advisors returned no findings.
 
-Render's baseline build succeeded but startup failed because DATABASE_URL was absent. Server environment configuration is pending explicit approval for the credential destination. The Google OAuth client currently has only the local callback. Cloud readiness, cloud callback, and scheduled sync are not complete.
+At the time of the previous verification, Render's baseline build succeeded but startup failed because DATABASE_URL was absent. This configuration failure and the missing cloud callback were resolved on 2026-09-26, as verified above. Scheduled Google sync is no longer the selected data-intake path.
 
 Historical weather bulk lookup is pending explicit approval for Open-Meteo. Fitness computation supports missing weather and labels incomplete evidence; it does not invent readings.
 

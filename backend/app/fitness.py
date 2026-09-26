@@ -280,6 +280,13 @@ def _duration_inputs(run: Any, analysis: Any, evidence_class: str) -> tuple[floa
     # A race finish includes pauses by definition.  A training run can use a
     # positive moving time, but only when telemetry did not explicitly mark it
     # unavailable and does not carry a low-confidence estimate.
+    # A supplied export duration is independent of the quality of a retained
+    # Google/GPS movement estimate. Keep that telemetry confidence unchanged.
+    if (_get(analysis, "moving_time_source") == "strava_export"
+            and moving is not None and moving > 0
+            and _number(_get(analysis, "provider_active_seconds")) == moving
+            and elapsed is not None and moving <= elapsed):
+        return moving, "moving", reasons
     available = _get(analysis, "moving_time_available")
     confidence = _number(_get(analysis, "moving_time_confidence"))
     confidence_label = _text(_get(analysis, "moving_time_confidence_label"))

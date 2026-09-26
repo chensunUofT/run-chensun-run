@@ -221,3 +221,10 @@ export type ImportResult = {
   imported: number
   skipped: number
 }
+
+export type StravaImportResult = {
+  imported: number
+  matched: number
+  skipped: number
+  warnings: string[]
+}

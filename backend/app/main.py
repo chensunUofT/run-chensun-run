@@ -728,7 +728,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             google_message = "Google Health is connected." if google_status == "connected" else (google.sync_error or "The last Google Health sync failed.")
         return [
             IntegrationRead(id="google-health", name="Google Health", status=google_status, message=google_message),
-            IntegrationRead(id="strava", name="Strava", status="not_configured", message="Credentials are needed before Runwise can connect to this service."),
+            IntegrationRead(id="strava", name="Strava", status="available", message="Import your personal Strava data export ZIP or activities.csv; no API connection is required."),
         ]
 
     @app.post("/api/demo/seed")
@@ -898,6 +898,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_weather_routes(app)
     from .bulk_runs import register_bulk_run_routes
     register_bulk_run_routes(app)
+    from .strava_archive_routes import register_strava_archive_routes
+    register_strava_archive_routes(app)
     # Render serves the compiled personal app from the API origin so the
     # HttpOnly session cookie remains same-site.  The helper is a no-op for
     # backend-only test runs without frontend/dist.

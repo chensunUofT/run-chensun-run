@@ -1,8 +1,6 @@
-name: Incremental Google Health sync
+name: Manual legacy Google Health sync
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '23 10 * * *'
 permissions:
   contents: read
 concurrency:

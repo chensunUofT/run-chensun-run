@@ -15,6 +15,7 @@ import type {
   ShoeCatalogItem,
   ShoeInference,
   ShoePayload,
+  StravaImportResult,
   Stats,
   UserProfile,
 } from '../types'
@@ -175,6 +176,11 @@ export const api = {
     const body = new FormData()
     body.append('file', file)
     return request<ImportResult>('/api/import/csv', { method: 'POST', body })
+  },
+  importStrava: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return request<StravaImportResult>('/api/import/strava', { method: 'POST', body })
   },
   exportData: () => requestBlob('/api/export'),
 }

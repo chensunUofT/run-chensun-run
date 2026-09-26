@@ -358,6 +358,36 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .checkin-submit-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; }.checkin-submit-row span { display: inline-flex; align-items: center; gap: 5px; color: #9ca69e; font-size: 9px; }.checkin-side-card { position: sticky; top: 20px; min-height: 365px; padding: 27px; color: #e9f0e9; background: var(--forest-deep); overflow: hidden; }.checkin-side-card::after { position: absolute; right: -45px; bottom: -70px; width: 210px; height: 210px; border: 1px solid rgba(217, 235, 214, .15); border-radius: 50%; content: ''; }.side-card-icon { display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 31px; border-radius: 11px; color: #e1efd9; background: rgba(222, 238, 218, .14); }.checkin-side-card .section-eyebrow { color: #9fbea4; }.checkin-side-card h3 { max-width: 200px; margin: 15px 0 11px; font-size: 25px; letter-spacing: -.06em; }.checkin-side-card p { max-width: 250px; margin: 0; color: #b8ceb9; font-size: 11px; line-height: 1.8; }.side-rule { width: 34px; height: 1px; margin: 37px 0 10px; background: #92b197; }.side-caption { color: #a5c1a8; font: 9px 'DM Mono', monospace; }
 
 .settings-section { display: grid; gap: 18px; }.settings-section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }.settings-section-heading h3 { margin: 8px 0 6px; font-size: 19px; letter-spacing: -.04em; }.settings-section-heading p { margin: 0; color: var(--muted); font-size: 11px; }.integration-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }.integration-card { display: flex; align-items: center; gap: 12px; min-height: 102px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }.integration-icon { display: grid; flex: 0 0 auto; place-items: center; width: 39px; height: 39px; border-radius: 11px; color: #8f9a91; background: #eef0eb; }.integration-icon-connected { color: var(--forest); background: var(--forest-soft); }.integration-copy { flex: 1; min-width: 0; }.integration-title { display: flex; align-items: center; gap: 9px; }.integration-title strong { font-size: 12px; }.integration-status { display: inline-flex; align-items: center; gap: 5px; color: #9a9f9b; font-size: 9px; }.integration-status > span { background: #b7beb8; }.integration-status-connected { color: var(--forest); }.integration-status-connected > span { background: var(--forest); }.integration-copy p { margin: 6px 0 0; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }.integration-card > svg { color: #b6beb7; }.pending-auth { position: relative; display: flex; align-items: center; gap: 14px; padding: 20px 22px; border: 1px solid #eadfca; border-radius: 15px; background: #fbf6e9; }.pending-icon { display: grid; flex: 0 0 auto; place-items: center; width: 36px; height: 36px; border-radius: 11px; color: #a47a42; background: #f3e6cb; }.pending-auth h3 { margin: 7px 0 4px; color: #715b3c; font-size: 13px; }.pending-auth p { margin: 0; color: #9b8769; font-size: 10px; line-height: 1.6; }.pending-auth .section-eyebrow { color: #ad987a; }.pending-badge { margin-left: auto; padding: 7px 9px; color: #a47a42; background: #f4e8cf; }.portability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }.portability-card { display: grid; grid-template-columns: auto 1fr auto; align-items: start; gap: 12px; min-height: 125px; padding: 19px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }.portability-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: #92714b; background: var(--amber-soft); }.portability-icon-green { color: var(--forest); background: var(--forest-soft); }.portability-card strong { display: block; margin: 2px 0 6px; font-size: 12px; }.portability-card p { max-width: 260px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }.portability-card .button { align-self: center; }.import-result { display: inline-flex; align-items: center; gap: 5px; margin-top: 9px; color: var(--forest); font-size: 9px; }.settings-footnote { display: flex; align-items: center; gap: 6px; color: #a0a8a1; font: 9px 'DM Mono', monospace; }.settings-footnote span { color: #c4c9c4; }
+.strava-import-card { display: grid; gap: 17px; padding: 23px; border-color: #c9ddc7; background: linear-gradient(135deg, #f6fbf3, #fffefa 64%); box-shadow: 0 8px 24px rgba(46, 106, 75, .07); }
+.strava-import-heading { display: flex; align-items: flex-start; gap: 13px; }
+.strava-import-heading > div:nth-child(2) { flex: 1; min-width: 0; }
+.strava-import-heading h3 { margin: 7px 0 6px; color: var(--ink); font-size: 19px; letter-spacing: -.045em; }
+.strava-import-heading p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.strava-import-icon { display: grid; flex: 0 0 auto; place-items: center; width: 42px; height: 42px; border-radius: 12px; color: var(--forest); background: #deeddc; }
+.strava-import-badge { flex: 0 0 auto; margin-top: 4px; padding: 6px 8px; border-radius: 6px; color: #6b7f6d; background: #e7f1e4; font: 8px 'DM Mono', monospace; letter-spacing: .05em; }
+.strava-import-help { padding: 14px 15px; border: 1px solid #dce9d9; border-radius: 11px; background: rgba(255, 255, 255, .56); }
+.strava-import-help strong { display: block; color: var(--muted-deep); font-size: 11px; }
+.strava-import-help p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.strava-import-links { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 17px; margin-top: 11px; }
+.strava-import-links a { display: inline-flex; align-items: center; gap: 5px; color: var(--forest-deep); font-size: 10px; font-weight: 700; text-decoration: none; }
+.strava-import-links a:hover { text-decoration: underline; }
+.strava-import-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.strava-file-copy { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.strava-file-name { max-width: 310px; overflow: hidden; color: var(--muted); font: 10px 'DM Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.strava-import-error { display: flex; align-items: center; gap: 7px; margin: 0; padding: 10px 11px; border-radius: 8px; color: var(--red); background: var(--red-soft); font-size: 10px; line-height: 1.45; }
+.strava-import-result { display: grid; gap: 12px; padding: 14px 15px; border: 1px solid #cfe1cc; border-radius: 11px; background: #f4faf2; }
+.strava-result-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.strava-result-heading strong { color: var(--forest-deep); font-size: 11px; }
+.strava-result-heading span { overflow: hidden; color: var(--muted); font: 9px 'DM Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.strava-result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.strava-result-grid span { display: grid; gap: 5px; padding: 9px 10px; border-radius: 8px; background: #fffefa; }
+.strava-result-grid small { color: var(--muted); font-size: 9px; }
+.strava-result-grid strong { color: var(--ink); font: 700 14px 'DM Mono', monospace; }
+.strava-warnings { padding-top: 10px; border-top: 1px solid #dce9d9; color: #7f653e; font-size: 9px; line-height: 1.5; }
+.strava-warnings strong { font-size: 10px; }
+.strava-warnings p { margin: 6px 0 0; color: var(--muted); }
+.strava-warnings ul { margin: 6px 0 0; padding-left: 17px; }
+.strava-warnings li + li { margin-top: 4px; }
 .modal-card.settings-modal-card { width: min(940px, 100%); }
 .settings-modal-card .settings-view { gap: 22px; }
 
@@ -387,6 +417,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .coach-context-feature { margin-top: 19px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+
+@media (max-width: 700px) {
+  .strava-import-card { padding: 18px; }
+  .strava-import-heading { gap: 10px; }
+  .strava-import-heading h3 { font-size: 17px; }
+  .strava-import-badge { display: none; }
+  .strava-import-controls { align-items: stretch; flex-direction: column; }
+  .strava-file-copy { align-items: flex-start; flex-direction: column; }
+  .strava-file-name { max-width: 100%; }
+  .strava-import-controls > .button,
+  .strava-file-copy > .button { width: 100%; }
+  .strava-result-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .strava-result-grid { grid-template-columns: 1fr; }
+}
 
 .language-toggle { min-height: 31px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted-deep); background: rgba(255,254,250,.72); font: 500 10px 'DM Mono', monospace; }
 .language-toggle:hover { color: var(--forest-deep); border-color: #c9d7ca; background: #fff; }
