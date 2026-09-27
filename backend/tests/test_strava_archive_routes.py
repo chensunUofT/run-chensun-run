@@ -8,6 +8,12 @@ from app import strava_archive_routes
 from app.db import Run
 
 
+def test_strava_integration_status_validates(client):
+    response = client.get('/api/integrations')
+    assert response.status_code == 200
+    assert next(item for item in response.json() if item['id'] == 'strava')['status'] == 'available'
+
+
 def test_export_duration_overrides_old_estimate_confidence_but_not_race_elapsed():
     from app.fitness import _duration_inputs
     run = {"duration_seconds": 1800, "moving_seconds": 1700}

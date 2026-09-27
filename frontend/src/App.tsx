@@ -728,6 +728,7 @@ function SettingsView({ onToast, onDataChanged, locale, onToggleLocale, t, embed
 function integrationMessage(integration: Integration, configured: boolean, t: Translate) {
   const id = integration.id.toLowerCase()
   const status = integration.status.toLowerCase()
+  if (id === 'strava') return t('settings.stravaCopy')
   if (id.includes('google')) {
     if (status === 'not_connected') return t('settings.googleReady')
     if (status === 'error' || status === 'failed') return t('errors.server')
@@ -738,6 +739,7 @@ function integrationMessage(integration: Integration, configured: boolean, t: Tr
 }
 
 function IntegrationCard({ integration, t }: { integration: Integration; t: Translate }) {
+  if (integration.id === 'strava') return null
   const configured = ['connected', 'active', 'ready'].includes(integration.status.toLowerCase())
   return <article className="integration-card"><div className={classNames('integration-icon', configured && 'integration-icon-connected')}><Icon name={integration.id.toLowerCase().includes('local') ? 'database' : 'activity'} size={20} /></div><div className="integration-copy"><div className="integration-title"><strong>{integration.name}</strong><span className={classNames('integration-status', configured && 'integration-status-connected')}><span />{configured ? t('settings.connected') : integration.status === 'not_connected' ? t('settings.notConnected') : t('settings.notConfigured')}</span></div><p>{integrationMessage(integration, configured, t)}</p></div><Icon name="chevron-right" size={17} /></article>
 }

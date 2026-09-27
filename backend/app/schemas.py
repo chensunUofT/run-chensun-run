@@ -303,7 +303,7 @@ class StatsRead(BaseModel):
 class IntegrationRead(BaseModel):
     id: str
     name: str
-    status: Literal["not_configured", "not_connected", "connected", "error"]
+    status: Literal["not_configured", "not_connected", "connected", "available", "error"]
     message: str
 
 
