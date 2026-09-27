@@ -51,14 +51,14 @@ MAX_ASCENT_TIME_PENALTY = 0.08
 # VDOT is a race-performance equivalence, so a training run cannot be fed to
 # the race equation unchanged.  These are deliberately broad fractions of
 # oxygen cost/VO2 demand, used only as transparent training assumptions.  The
-# broad ranges echo Daniels-style zones (easy roughly 65--79%, threshold
+# broad ranges echo Daniels-style oxygen-demand zones (easy 59--74%, threshold
 # 83--88%, intervals 95--100%) without claiming to measure VO2max from a
 # recreational GPS run.  A lower fraction produces the faster edge of the
 # equivalent-race range.
 _TRAINING_INTENSITY = {
-    "easy": {"low": 0.65, "high": 0.79, "central": 0.75, "label": "easy"},
-    "long": {"low": 0.65, "high": 0.77, "central": 0.73, "label": "long"},
-    "general": {"low": 0.68, "high": 0.80, "central": 0.75, "label": "general"},
+    "easy": {"low": 0.59, "high": 0.74, "central": 0.68, "label": "easy"},
+    "long": {"low": 0.59, "high": 0.74, "central": 0.67, "label": "long"},
+    "general": {"low": 0.59, "high": 0.80, "central": 0.70, "label": "general"},
     "quality": {"low": 0.82, "high": 0.90, "central": 0.86, "label": "quality"},
     "tempo": {"low": 0.83, "high": 0.88, "central": 0.855, "label": "threshold"},
     "interval": {"low": 0.95, "high": 1.00, "central": 0.975, "label": "interval"},

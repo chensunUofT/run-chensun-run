@@ -43,7 +43,9 @@ def test_race_uses_daniels_vdot_and_easy_run_is_conservative_proxy():
     assert race["method"] == "vdot_daniels_gilbert"
     assert race["confidence"] == "high"
     assert race["factors"]["prediction_eligible"] is True
-    assert easy["score"] < race["score"]
+    # Easy effort at a given pace implies a higher capacity than racing at
+    # that same pace; it cannot be ranked against an unrelated race pace.
+    assert easy["score"] > easy["factors"]["raw_vdot"]
     assert easy["confidence"] == "low"
     assert easy["factors"]["prediction_eligible"] is False
     assert easy["factors"]["training_run_not_all_out"] is True
@@ -151,11 +153,11 @@ def test_training_vdot_uses_type_intensity_and_is_length_invariant_for_same_pace
 
     assert easy_5k["factors"]["training_intensity_assumption"] == "easy"
     assert easy_5k["factors"]["training_intensity_basis"] == "fraction_of_pace_oxygen_cost"
-    assert easy_5k["factors"]["training_intensity_fraction_low"] == 0.65
-    assert easy_5k["factors"]["training_intensity_fraction_high"] == 0.79
+    assert easy_5k["factors"]["training_intensity_fraction_low"] == 0.59
+    assert easy_5k["factors"]["training_intensity_fraction_high"] == 0.74
     assert easy_5k["score"] == pytest.approx(easy_10k["score"], abs=0.02)
     # The easy pace is not silently displayed as an all-out race result.
-    assert easy_5k["score"] < race["score"]
+    assert easy_5k["score"] > easy_5k["factors"]["raw_vdot"]
     assert easy_5k["factors"]["equivalent_race_duration_seconds"] < easy_5k["factors"]["observed_duration_seconds"]
     assert easy_5k["factors"]["equivalent_race_duration_low_seconds"] < easy_5k["factors"]["equivalent_race_duration_high_seconds"]
 
