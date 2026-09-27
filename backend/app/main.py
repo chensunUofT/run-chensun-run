@@ -132,7 +132,8 @@ def _run_read(run: Run) -> RunRead:
 
 
 def _real_run_clause():
-    return ~func.lower(Run.source).contains("demo") & ~func.lower(Run.source).contains("sample")
+    from .run_visibility import visible_run_clause
+    return visible_run_clause()
 
 
 def _shoe_read(shoe: Shoe, total_distance: float | int | None = None) -> ShoeRead:
@@ -243,7 +244,7 @@ def _build_stats(
     total_duration = 0
     total_moving = 0
     run_count = 0
-    runs = db.scalars(select(Run).where(Run.owner_id == owner_id)).all()
+    runs = db.scalars(select(Run).where(Run.owner_id == owner_id, _real_run_clause())).all()
     for run in runs:
         if "demo" in run.source.lower() or "sample" in run.source.lower():
             continue
@@ -468,7 +469,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/runs", response_model=list[RunRead])
     def list_runs(owner_id: str = Depends(get_current_owner), db: Session = Depends(get_db)) -> list[RunRead]:
-        runs = db.scalars(select(Run).where(Run.owner_id == owner_id).order_by(Run.started_at.desc(), Run.id.desc())).all()
+        runs = db.scalars(select(Run).where(Run.owner_id == owner_id, _real_run_clause()).order_by(Run.started_at.desc(), Run.id.desc())).all()
         return [_run_read(run) for run in runs if "demo" not in run.source.lower() and "sample" not in run.source.lower()]
 
     @app.get("/api/runs/{run_id}", response_model=RunRead)
@@ -843,7 +844,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run_id = payload.run_id
         if payload.kind == "run":
             if run_id is None:
-                run = db.scalar(select(Run).where(Run.owner_id == owner_id).order_by(Run.started_at.desc(), Run.id.desc()))
+                run = db.scalar(select(Run).where(Run.owner_id == owner_id, _real_run_clause()).order_by(Run.started_at.desc(), Run.id.desc()))
                 if run is None:
                     raise HTTPException(status_code=404, detail="No run is available to share")
             else:

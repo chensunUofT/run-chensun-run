@@ -103,7 +103,8 @@ export function RunFitness({ runId, t }: { runId: string | number; t: Translate 
   const factors = result.factors
   const trainingEstimate = factors.training_run_not_all_out === true || factors.score_kind !== 'vdot'
   const scoreLabel = trainingEstimate ? t('fitness.effortEstimate') : t('fitness.raceVdot')
-  const score = result.score == null ? '—' : result.score.toFixed(1)
+  const missingWorkSegments = factors.score_kind === 'interval_average_only'
+  const score = result.score == null || missingWorkSegments ? '—' : result.score.toFixed(1)
   const chips: string[] = []
   const heatPenalty = factors.weather_time_penalty_percent
   const ascentPenalty = factors.elevation_time_penalty_percent
@@ -115,7 +116,7 @@ export function RunFitness({ runId, t }: { runId: string | number; t: Translate 
       <div className="run-fitness-heading"><span className="run-fitness-eyebrow">{t('fitness.eyebrow')}</span><strong>{t('fitness.title')}</strong></div>
       <div className="run-fitness-summary"><span>{scoreLabel}</span><small>{methodLabel(result.method, t)} · {confidenceLabel(result.confidence, t)}</small></div>
       {chips.length > 0 && <div className="run-fitness-factors">{chips.map((chip) => <span key={chip}>{chip}</span>)}</div>}
-      <p className="run-fitness-note">{trainingEstimate ? t('fitness.trainingNote') : t('fitness.raceNote')}</p>
+      <p className="run-fitness-note">{missingWorkSegments ? t('fitness.missingWorkSegments') : trainingEstimate ? t('fitness.trainingNote') : t('fitness.raceNote')}</p>
     </div>
     <div className="run-fitness-score"><strong>{score}</strong><span>{t('fitness.score')}</span></div>
   </section>

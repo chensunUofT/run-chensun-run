@@ -32,11 +32,11 @@ from sqlalchemy import (
     UniqueConstraint,
     select,
 )
-from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship, selectinload
 
 from .auth import get_current_owner
 from .db import Base, OWNER_ID_TYPE, Run, get_db
-from .fitness import compute_fitness
+from .fitness import compute_fitness, equivalent_time_for_vdot, training_pace_for_vdot, vdot_for_time
 
 
 # Pydantic resolves annotations in a model's class namespace.  The session
@@ -56,6 +56,12 @@ SESSION_TYPES = frozenset({"easy", "quality", "long", "race", "rest"})
 MAX_PLAN_DAYS = 366
 RIEGEL_EXPONENT = 1.06
 HISTORY_DAYS = 180
+# A race is useful longer than an ordinary training proxy.  Keeping a modest
+# grace window means a half-marathon at day 181 is not silently replaced by a
+# much weaker recent tempo run, while the returned confidence/spread still
+# makes staleness visible to callers.
+RACE_HISTORY_DAYS = 365
+RACE_AGGREGATION_DAYS = 90
 
 
 class CoachingGoal(Base):
@@ -203,7 +209,7 @@ def _run_date(run: Run) -> date:
 
 def _is_excluded_source(source: object) -> bool:
     normalized = str(source or "").strip().lower()
-    return normalized in {"demo", "sample", "example", "fixture", "seed"} or normalized.startswith(("demo", "sample"))
+    return normalized in {"demo", "sample", "example", "fixture", "seed", "google_health_excluded"} or normalized.startswith(("demo", "sample"))
 
 
 def _real_runs(runs: list[Run] | tuple[Run, ...], *, today: date) -> list[Run]:
@@ -303,9 +309,43 @@ def _round_pace(value: float) -> int:
     return max(1, int(round(float(value))))
 
 
-def _equivalent_goal_pace(run: Run, goal_distance: float) -> float:
-    duration = _prediction_duration(run)
-    projected = duration * (goal_distance / float(run.distance_km)) ** RIEGEL_EXPONENT
+def _equivalent_goal_pace(
+    run: Run,
+    goal_distance: float,
+    fitness: dict[str, Any] | None = None,
+) -> float | None:
+    """Return a goal-distance pace using the run's type-aware VDOT score.
+
+    The fallback keeps older callers safe when they do not provide a fitness
+    result.  Coaching itself supplies ``fitness`` so an easy run is not
+    treated as an all-out race and interval recoveries never define the
+    equivalent time.
+    """
+
+    if fitness is not None:
+        factors = fitness.get("factors") if isinstance(fitness, dict) else None
+        if isinstance(factors, dict):
+            score = factors.get("equivalent_vdot")
+            if not isinstance(score, (int, float)):
+                score = fitness.get("score")
+            if isinstance(score, (int, float)):
+                projected = equivalent_time_for_vdot(float(score), float(goal_distance))
+                if projected is not None and projected > 0:
+                    # Interval rows without a sustained work block have no
+                    # equivalent prediction duration and must stay excluded.
+                    if factors.get("evidence_class") == "interval" and not factors.get("interval_work_segments_available"):
+                        return None
+                    return projected / float(goal_distance)
+
+    factors = fitness.get("factors") if isinstance(fitness, dict) else None
+    duration = None
+    if isinstance(factors, dict):
+        duration = factors.get("prediction_duration_seconds")
+    if not isinstance(duration, (int, float)) or duration <= 0:
+        duration = _prediction_duration(run)
+    if duration is None or float(run.distance_km) <= 0:
+        return None
+    projected = float(duration) * (goal_distance / float(run.distance_km)) ** RIEGEL_EXPONENT
     return projected / goal_distance
 
 
@@ -332,143 +372,269 @@ def _interval_like(run: Run) -> bool:
     return any(token in label for token in ("interval", "repetition", "repeats", "800m", "400m", "track"))
 
 
+def _run_age(run: Run, today: date) -> int:
+    return max(0, (today - _run_date(run)).days)
+
+
+def _fitness_inputs(run: Run) -> tuple[Any, dict[str, Any]]:
+    """Read already-loaded stream/weather metadata for one pure calculation."""
+
+    stream = getattr(run, "stream", None)
+    analysis = getattr(run, "analysis", None)
+    if not isinstance(analysis, dict):
+        candidate = getattr(stream, "analysis", None)
+        analysis = candidate if isinstance(candidate, dict) else {}
+    weather = getattr(run, "weather", None)
+    if weather is None:
+        candidate = analysis.get("weather")
+        weather = candidate if isinstance(candidate, dict) else None
+    return weather, analysis
+
+
+def _fitness_for_run(run: Run) -> dict[str, Any]:
+    weather, analysis = _fitness_inputs(run)
+    return compute_fitness(run, weather, analysis)
+
+
+def _history_eligible(run: Run, result: dict[str, Any], *, today: date) -> bool:
+    """Keep ordinary history recent, with a one-year race anchor grace window."""
+
+    age = _run_age(run, today)
+    factors = result.get("factors") if isinstance(result, dict) else None
+    evidence_class = factors.get("evidence_class") if isinstance(factors, dict) else None
+    if evidence_class in {"race", "time_trial"}:
+        return age <= RACE_HISTORY_DAYS
+    return age <= HISTORY_DAYS
+
+
+def _prediction_evidence(
+    run: Run,
+    fitness: dict[str, Any],
+    *,
+    goal_distance: float,
+) -> dict[str, Any] | None:
+    """Normalize one run into the common equivalent-time evidence shape."""
+
+    factors = fitness.get("factors") if isinstance(fitness, dict) else None
+    if not isinstance(factors, dict):
+        return None
+    evidence_class = str(factors.get("evidence_class") or "general")
+    # Race/time-trial and tempo anchors must meet the explicit anchor length;
+    # sustained training rows remain a low-confidence fallback even though
+    # they are never marked race-prediction eligible.
+    if evidence_class in {"race", "time_trial", "tempo"} and not factors.get("prediction_eligible"):
+        return None
+    if evidence_class == "interval" and not factors.get("interval_work_segments_available"):
+        return None
+    if not isinstance(factors.get("prediction_duration_seconds"), (int, float)):
+        return None
+    score = factors.get("equivalent_vdot")
+    if not isinstance(score, (int, float)):
+        score = fitness.get("score")
+    if not isinstance(score, (int, float)):
+        return None
+    equivalent_seconds = equivalent_time_for_vdot(float(score), goal_distance)
+    if equivalent_seconds is None or equivalent_seconds <= 0:
+        return None
+    if not math.isfinite(float(equivalent_seconds)):
+        return None
+    return {
+        "run": run,
+        "fitness": fitness,
+        "evidence_class": evidence_class,
+        "score": float(score),
+        "equivalent_seconds": float(equivalent_seconds),
+        "age_days": None,
+    }
+
+
 def _prediction(
     goal: CoachingGoal,
     runs: list[Run],
     *,
     today: date,
 ) -> dict[str, Any] | None:
+    # The race grace window is intentional: a six-month race remains a better
+    # anchor than a one-day tempo proxy.  Ordinary training rows continue to
+    # use the tighter recent window below.
     eligible = [
         run
         for run in _real_runs(runs, today=today)
-        if today - timedelta(days=HISTORY_DAYS) <= _run_date(run) <= today
+        if _run_age(run, today) <= RACE_HISTORY_DAYS
     ]
     if not eligible:
         return None
 
-    def _fitness_for(run: Run) -> dict[str, Any]:
-        # Weather is optional and deliberately read only from already-loaded
-        # run/stream metadata.  Coaching never performs a provider lookup.
-        stream = getattr(run, "stream", None)
-        analysis = getattr(run, "analysis", None)
-        if not isinstance(analysis, dict):
-            candidate = getattr(stream, "analysis", None)
-            analysis = candidate if isinstance(candidate, dict) else {}
-        weather = getattr(run, "weather", None)
-        if weather is None:
-            candidate = analysis.get("weather")
-            weather = candidate if isinstance(candidate, dict) else None
-        return compute_fitness(run, weather, analysis)
-
-    evidence: list[tuple[Run, dict[str, Any]]] = [
-        (run, _fitness_for(run)) for run in eligible
-    ]
-
-    def _class(result: dict[str, Any]) -> str:
-        factors = result.get("factors")
-        return str(factors.get("evidence_class", "general")) if isinstance(factors, dict) else "general"
-
-    def _duration(result: dict[str, Any]) -> float | None:
-        factors = result.get("factors")
-        if not isinstance(factors, dict):
-            return None
-        value = factors.get("neutral_duration_seconds")
-        if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) <= 0:
-            return None
-        return float(value)
-
-    # A race or time trial is the strongest anchor.  A recent result wins so
-    # one unusually fast old race cannot silently set current training paces.
-    races = [
-        (run, result)
-        for run, result in evidence
-        if _class(result) in {"race", "time_trial"}
-        and bool(result.get("factors", {}).get("prediction_eligible"))
-        and _duration(result) is not None
-    ]
-    evidence_kind = "race"
-    if races:
-        reference, fitness = max(
-            races,
-            key=lambda item: (_run_date(item[0]), float(item[0].distance_km), int(item[0].id)),
-        )
-    else:
-        # Tempo is useful supporting evidence, but carries wider uncertainty
-        # than a race and is only considered after all race evidence is gone.
-        tempos = [
-            (run, result)
-            for run, result in evidence
-            if _class(result) == "tempo"
-            and bool(result.get("factors", {}).get("prediction_eligible"))
-            and _duration(result) is not None
-        ]
-        if tempos:
-            reference, fitness = min(
-                tempos,
-                key=lambda item: (
-                    float(item[1]["factors"]["prediction_duration_seconds"]) * (float(goal.distance_km) / float(item[1]["factors"]["distance_km"])) ** RIEGEL_EXPONENT,
-                    -_run_date(item[0]).toordinal(),
-                    -int(item[0].id),
-                ),
-            )
-            evidence_kind = "tempo"
-        else:
-            # Keep the legacy low-confidence fallback for users with no race
-            # or tempo, but make its duration explicitly slower than a literal
-            # all-out interpretation.  Easy pace is never promoted to race
-            # evidence, and interval whole-run averages remain excluded.
-            sustained = [
-                (run, result)
-                for run, result in evidence
-                if _class(result) in {"easy", "long", "general"}
-                and not _interval_like(run)
-                and float(run.distance_km) >= 3.0
-                and _duration(result) is not None
-                and isinstance(result.get("factors", {}).get("prediction_duration_seconds"), (int, float))
-            ]
-            if not sustained:
-                return None
-            reference, fitness = min(
-                sustained,
-                key=lambda item: (
-                    float(item[1]["factors"]["prediction_duration_seconds"]) * (float(goal.distance_km) / float(item[1]["factors"]["distance_km"])) ** RIEGEL_EXPONENT,
-                    -_run_date(item[0]).toordinal(),
-                    -int(item[0].id),
-                ),
-            )
-            evidence_kind = "training_proxy"
-
-    factors = fitness.get("factors") if isinstance(fitness, dict) else {}
-    projection_duration = factors.get("prediction_duration_seconds") if isinstance(factors, dict) else None
-    if not isinstance(projection_duration, (int, float)) or not math.isfinite(float(projection_duration)) or float(projection_duration) <= 0:
-        projection_duration = _duration(fitness)
-    if projection_duration is None:
+    evidence: list[dict[str, Any]] = []
+    recent_rows: list[dict[str, Any]] = []
+    for run in eligible:
+        fitness = _fitness_for_run(run)
+        factors = fitness.get("factors") if isinstance(fitness, dict) else {}
+        evidence_class = str(factors.get("evidence_class", "general")) if isinstance(factors, dict) else "general"
+        recent_rows.append({"run": run, "fitness": fitness, "evidence_class": evidence_class})
+        if not _history_eligible(run, fitness, today=today):
+            continue
+        item = _prediction_evidence(run, fitness, goal_distance=float(goal.distance_km))
+        if item is None:
+            continue
+        item["age_days"] = _run_age(run, today)
+        evidence.append(item)
+    if not evidence:
         return None
-    seconds = float(projection_duration) * (
-        float(goal.distance_km) / float(factors.get("distance_km") or reference.distance_km)
-    ) ** RIEGEL_EXPONENT
-    if evidence_kind == "race":
-        confidence = str(fitness.get("confidence", "high"))
+
+    # Race/time-trial evidence always wins.  Within one evidence class use a
+    # median equivalent time to resist a single anomalously fast or slow day;
+    # the latest contributing row remains the visible reference row.
+    races = [item for item in evidence if item["evidence_class"] in {"race", "time_trial"}]
+    tempos = [item for item in evidence if item["evidence_class"] == "tempo"]
+    sustained = [
+        item
+        for item in evidence
+        if item["evidence_class"] in {"easy", "long", "general", "quality"}
+        and float(item["run"].distance_km) >= 3.0
+        and not _interval_like(item["run"])
+    ]
+    if races:
+        latest_race_date = max(_run_date(item["run"]) for item in races)
+        # A stale race remains eligible as an anchor, but a much older result
+        # should not be blended equally with a newer race. Aggregate the
+        # cluster from the latest 90 days and expose its members below.
+        chosen = [
+            item
+            for item in races
+            if latest_race_date - _run_date(item["run"]) <= timedelta(days=RACE_AGGREGATION_DAYS)
+        ]
+        evidence_kind = "race"
         spread = 0.08
-        method = "VDOT-adjusted Riegel projection (race/time-trial)"
+        reference_item = max(chosen, key=lambda item: (_run_date(item["run"]), int(getattr(item["run"], "id", 0) or 0)))
+        method = "VDOT equivalent projection (race/time-trial aggregate)"
+    elif tempos:
+        chosen = tempos
+        evidence_kind = "tempo"
+        spread = 0.14
+        reference_item = max(chosen, key=lambda item: (_run_date(item["run"]), int(getattr(item["run"], "id", 0) or 0)))
+        method = "VDOT equivalent projection (tempo threshold; uncertain)"
+    else:
+        chosen = sustained
+        evidence_kind = "training_proxy"
+        spread = 0.20
+        if not chosen:
+            return None
+        reference_item = max(chosen, key=lambda item: (_run_date(item["run"]), int(getattr(item["run"], "id", 0) or 0)))
+        method = "VDOT equivalent projection (type-aware training pace; uncertain)"
+
+    equivalent_scores = [float(item["score"]) for item in chosen]
+    score = float(median(equivalent_scores))
+    # Derive the aggregate target time from the aggregate VDOT, rather than
+    # taking separate medians that can become a few seconds incoherent after
+    # crossing distances or the nonlinear Daniels equation.
+    seconds_value = equivalent_time_for_vdot(score, float(goal.distance_km))
+    seconds = (
+        float(seconds_value)
+        if seconds_value is not None
+        else float(median(float(item["equivalent_seconds"]) for item in chosen))
+    )
+    reference = reference_item["run"]
+    fitness = reference_item["fitness"]
+    factors = fitness.get("factors") if isinstance(fitness, dict) else {}
+    if evidence_kind == "race" and reference_item["age_days"] > HISTORY_DAYS:
+        # Keep the anchor while making the older date visible in confidence.
+        confidence = "medium"
+        spread = max(spread, 0.12)
+    elif evidence_kind == "race":
+        confidence = "high"
     elif evidence_kind == "tempo":
         confidence = "medium"
-        spread = 0.12
-        method = "VDOT-supported Riegel projection (tempo; uncertain)"
     else:
         confidence = "low"
-        spread = 0.18
-        method = "Conservative Riegel projection (training proxy; easy pace is not all-out)"
     if isinstance(factors, dict) and float(factors.get("environment_time_multiplier") or 1.0) > 1.000001:
         method += "; weather/elevation correction is heuristic"
+
+    # The interval is deliberately based on the aggregated equivalent time;
+    # each per-run score and type assumption remains available for display.
+    evidence_rows = [
+        {
+            "run_id": int(getattr(item["run"], "id", 0) or 0),
+            "run_type": str(getattr(item["run"], "run_type", "run") or "run"),
+            "evidence_class": item["evidence_class"],
+            "age_days": int(item["age_days"]),
+            "equivalent_vdot": round(item["score"], 2),
+            "equivalent_seconds": _round_pace(item["equivalent_seconds"]),
+        }
+        for item in sorted(chosen, key=lambda value: (_run_date(value["run"]), int(getattr(value["run"], "id", 0) or 0)), reverse=True)
+    ]
+    used_ids = {row["run_id"] for row in evidence_rows}
+    recent_run_estimates: list[dict[str, Any]] = []
+    for row in sorted(
+        recent_rows,
+        key=lambda value: (_run_date(value["run"]), int(getattr(value["run"], "id", 0) or 0)),
+        reverse=True,
+    )[:12]:
+        run = row["run"]
+        result = row["fitness"]
+        row_factors = result.get("factors") if isinstance(result, dict) else {}
+        if not isinstance(row_factors, dict):
+            row_factors = {}
+        row_score = row_factors.get("equivalent_vdot")
+        row_seconds = (
+            equivalent_time_for_vdot(float(row_score), float(goal.distance_km))
+            if isinstance(row_score, (int, float))
+            and isinstance(row_factors.get("prediction_duration_seconds"), (int, float))
+            else None
+        )
+        recent_run_estimates.append(
+            {
+                "run_id": int(getattr(run, "id", 0) or 0),
+                "run_type": str(getattr(run, "run_type", "run") or "run"),
+                "evidence_class": row["evidence_class"],
+                "pace_seconds_per_km": _round_pace(
+                    float(row_factors["effort_pace_seconds_per_km"])
+                    if isinstance(row_factors.get("effort_pace_seconds_per_km"), (int, float))
+                    else float(row_factors["neutral_pace_seconds_per_km"])
+                    if isinstance(row_factors.get("neutral_pace_seconds_per_km"), (int, float))
+                    else float(row_factors["observed_pace_seconds_per_km"])
+                    if isinstance(row_factors.get("observed_pace_seconds_per_km"), (int, float))
+                    else 0
+                ) if row_factors.get("effort_pace_seconds_per_km") is not None or row_factors.get("neutral_pace_seconds_per_km") is not None or row_factors.get("observed_pace_seconds_per_km") is not None else None,
+                "equivalent_vdot": round(float(row_score), 2) if isinstance(row_score, (int, float)) else None,
+                "equivalent_seconds": _round_pace(row_seconds) if row_seconds is not None else None,
+                "confidence": result.get("confidence", "insufficient") if isinstance(result, dict) else "insufficient",
+                "used_in_prediction": int(getattr(run, "id", 0) or 0) in used_ids,
+            }
+        )
+    equivalent_times: list[dict[str, Any]] = []
+    for distance in (5.0, 10.0, 21.0975, 42.195):
+        total = equivalent_time_for_vdot(score, distance)
+        if total is None:
+            continue
+        equivalent_times.append(
+            {
+                "distance_km": distance,
+                "seconds": _round_pace(total),
+                "low_seconds": _round_pace(total * (1 - spread)),
+                "high_seconds": _round_pace(total * (1 + spread)),
+                "pace_seconds_per_km": _round_pace(total / distance),
+            }
+        )
+    aggregate_time_low = seconds * (1 - spread)
+    aggregate_time_high = seconds * (1 + spread)
     return {
         "seconds": _round_pace(seconds),
-        "low_seconds": _round_pace(seconds * (1 - spread)),
-        "high_seconds": _round_pace(seconds * (1 + spread)),
+        "low_seconds": _round_pace(aggregate_time_low),
+        "high_seconds": _round_pace(aggregate_time_high),
+        "equivalent_time_seconds": _round_pace(seconds),
+        "equivalent_vdot": round(score, 2),
+        "equivalent_times": equivalent_times,
+        "recent_run_estimates": recent_run_estimates,
+        "evidence_kind": evidence_kind,
+        "evidence_count": len(chosen),
+        "evidence_run_ids": [row["run_id"] for row in evidence_rows],
+        "evidence": evidence_rows,
         "method": method,
         "confidence": confidence,
-        "reference_run_id": int(reference.id),
-        "fitness_score": fitness.get("score"),
+        "reference_run_id": int(getattr(reference, "id", 0) or 0),
+        "reference_age_days": int(reference_item["age_days"]),
+        "fitness_score": round(score, 2),
         "fitness_method": fitness.get("method"),
         "fitness_factors": factors,
     }
@@ -481,43 +647,23 @@ def _training_paces(
     *,
     today: date,
 ) -> dict[str, int | None]:
-    eligible = [
-        run
-        for run in _real_runs(runs, today=today)
-        if today - timedelta(days=HISTORY_DAYS) <= _run_date(run) <= today
-    ]
-    goal_pace = float(goal.target_seconds) / float(goal.distance_km)
-    if eligible:
-        sustained = [
-            run
-            for run in eligible
-            if not _interval_like(run)
-            if float(run.distance_km) >= 3.0
-            and 120.0 <= _prediction_duration(run) / float(run.distance_km) <= 1_200.0
-        ]
-        races = [run for run in eligible if str(run.run_type).strip().lower() == "race"]
-        pace_runs = sustained + [run for run in races if run not in sustained]
-        if pace_runs:
-            evidence_paces = [_equivalent_goal_pace(run, float(goal.distance_km)) for run in pace_runs]
-            evidence_pace = float(median(evidence_paces))
-        else:
-            evidence_pace = goal_pace
-    else:
-        # There is no measured baseline.  The target is only a planning input,
-        # so derive a conservative starter range and describe the uncertainty
-        # in each generated workout's text.
-        evidence_pace = goal_pace
-
-    # A target that is substantially quicker than current evidence must not
-    # force equally aggressive workouts.  Pace is seconds/km, so max() is the
-    # slower bound.  The 5% bridge permits gradual progress without pretending
-    # the goal has already been demonstrated.
-    effective_race_pace = max(goal_pace, evidence_pace * 0.95)
+    """Use the same fitness evidence as the displayed race projection."""
+    score = prediction.get("equivalent_vdot") if isinstance(prediction, dict) else None
+    if not isinstance(score, (int, float)) or not math.isfinite(score):
+        derived = _prediction(goal, runs, today=today)
+        score = derived.get("equivalent_vdot") if derived else None
+    target_score = vdot_for_time(float(goal.distance_km), float(goal.target_seconds))
+    if not isinstance(score, (int, float)):
+        # With no history, the target is only a conservative planning input.
+        score = max(20.0, target_score * 0.95) if target_score is not None else None
+    elif target_score is not None:
+        # An ambitious target cannot accelerate training beyond current evidence.
+        score = min(score, target_score)
+    if score is None:
+        return {"easy": None, "tempo": None, "interval": None, "long": None}
     return {
-        "easy": _round_pace(max(evidence_pace * 1.18, effective_race_pace * 1.14)),
-        "tempo": _round_pace(max(evidence_pace * 1.05, effective_race_pace * 1.04)),
-        "interval": _round_pace(max(evidence_pace * 0.94, effective_race_pace * 0.96)),
-        "long": _round_pace(max(evidence_pace * 1.15, effective_race_pace * 1.12)),
+        kind: _round_pace(training_pace_for_vdot(score, kind))
+        for kind in ("easy", "tempo", "interval", "long")
     }
 
 
@@ -858,7 +1004,7 @@ def _state(db: Session, owner_id: str) -> dict[str, Any]:
         .where(CoachingSession.owner_id == owner_id, CoachingSession.goal_id == goal.id)
         .order_by(CoachingSession.date, CoachingSession.id)
     ).all()
-    runs = db.scalars(select(Run).where(Run.owner_id == owner_id)).all()
+    runs = db.scalars(select(Run).options(selectinload(Run.stream)).where(Run.owner_id == owner_id)).all()
     today = _today()
     prediction = _prediction(goal, runs, today=today)
     paces = _training_paces(goal, runs, prediction, today=today)
@@ -877,7 +1023,7 @@ def _state(db: Session, owner_id: str) -> dict[str, Any]:
 
 
 def _safe_patch_response(db: Session, owner_id: str, session: CoachingSession) -> dict[str, Any]:
-    runs = db.scalars(select(Run).where(Run.owner_id == owner_id)).all()
+    runs = db.scalars(select(Run).options(selectinload(Run.stream)).where(Run.owner_id == owner_id)).all()
     match = _match_completed([session], runs, today=_today()).get(int(session.id))
     return _session_json(session, match)
 
@@ -944,7 +1090,7 @@ def register_coaching_routes(app: FastAPI) -> None:
                 )
             )
         db.flush()
-        runs = db.scalars(select(Run).where(Run.owner_id == owner_id)).all()
+        runs = db.scalars(select(Run).options(selectinload(Run.stream)).where(Run.owner_id == owner_id)).all()
         _regenerate(db, goal, owner_id, runs, today=today)
         _commit(db)
         return _state(db, owner_id)
@@ -958,7 +1104,7 @@ def register_coaching_routes(app: FastAPI) -> None:
         if goal is None:
             raise HTTPException(status_code=404, detail="No coaching goal is configured")
         today = _today()
-        runs = db.scalars(select(Run).where(Run.owner_id == owner_id)).all()
+        runs = db.scalars(select(Run).options(selectinload(Run.stream)).where(Run.owner_id == owner_id)).all()
         _regenerate(db, goal, owner_id, runs, today=today)
         goal.updated_at = datetime.now(timezone.utc)
         _commit(db)

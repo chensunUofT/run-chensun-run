@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
-from app.coaching import CoachingGoal, CoachingSchedule, CoachingSession
+from app.coaching import CoachingGoal, CoachingSchedule, CoachingSession, _prediction
 from app.owner import DEV_OWNER_ID
 
 
@@ -176,6 +177,54 @@ def test_prediction_stays_null_for_only_short_or_interval_like_evidence(client: 
     assert interval.status_code == 201, interval.text
     body = client.get("/api/coaching").json()
     assert body["prediction"] is None
+
+
+def test_prediction_keeps_a_six_month_race_anchor_and_exposes_equivalent_times():
+    today = _today()
+    local_zone = ZoneInfo("America/New_York")
+
+    def run(run_id: int, *, age_days: int, run_type: str, distance_km: float, duration_seconds: int, source: str = "strava"):
+        return SimpleNamespace(
+            id=run_id,
+            source=source,
+            title=f"{run_type} evidence",
+            started_at=datetime.combine(today - timedelta(days=age_days), time(8), tzinfo=local_zone),
+            source_utc_offset_seconds=None,
+            distance_km=distance_km,
+            duration_seconds=duration_seconds,
+            moving_seconds=duration_seconds,
+            run_type=run_type,
+            stream=None,
+        )
+
+    goal = SimpleNamespace(distance_km=21.0975, target_seconds=7_200)
+    race = run(101, age_days=181, run_type="race", distance_km=21.0975, duration_seconds=7_020)
+    tempo = run(102, age_days=1, run_type="tempo", distance_km=10.0, duration_seconds=3_000)
+    prediction = _prediction(goal, [race, tempo], today=today)
+
+    assert prediction is not None
+    assert prediction["evidence_kind"] == "race"
+    assert prediction["reference_run_id"] == 101
+    assert prediction["reference_age_days"] == 181
+    assert prediction["equivalent_vdot"] > 0
+    assert {item["distance_km"] for item in prediction["equivalent_times"]} == {5.0, 10.0, 21.0975, 42.195}
+    estimates = {item["run_id"]: item for item in prediction["recent_run_estimates"]}
+    assert estimates[101]["used_in_prediction"] is True
+    assert estimates[102]["used_in_prediction"] is False
+    assert estimates[102]["equivalent_seconds"] is not None
+
+
+def test_google_health_excluded_source_never_becomes_coaching_evidence():
+    from app.coaching import _real_runs
+
+    run = SimpleNamespace(
+        source="google_health_excluded",
+        started_at=datetime.now(timezone.utc),
+        source_utc_offset_seconds=None,
+        distance_km=10.0,
+        duration_seconds=3_600,
+    )
+    assert _real_runs([run], today=_today()) == []
 
 
 def test_same_local_date_completion_is_one_to_one_and_distance_aware(client: TestClient) -> None:

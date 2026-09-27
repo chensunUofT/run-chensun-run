@@ -683,6 +683,178 @@ def _normalize_session(point: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _session_source_mapping(session: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return the provider ``dataSource`` projection for one exercise.
+
+    Google Health can expose the source either on the normalized record or on
+    the lossless provider point.  The duplicate guard deliberately reads only
+    source metadata; it never uses a source identifier as an equivalence key.
+    """
+
+    values: list[Any] = [session.get("data_source"), session.get("dataSource")]
+    raw = session.get("raw")
+    if isinstance(raw, Mapping):
+        values.extend((raw.get("dataSource"), raw.get("data_source")))
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        if not value:
+            continue
+        nested = value.get("dataSource") or value.get("data_source")
+        if isinstance(nested, Mapping):
+            return nested
+        return value
+    return None
+
+
+def _source_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _session_source_metadata(session: Mapping[str, Any]) -> dict[str, str] | None:
+    """Return a bounded, non-identifying source descriptor for persistence."""
+
+    source = _session_source_mapping(session)
+    if source is None:
+        return None
+    device = source.get("device")
+    device = device if isinstance(device, Mapping) else {}
+    application = source.get("application")
+    application = application if isinstance(application, Mapping) else {}
+    values = {
+        "platform": source.get("platform") or source.get("platformName"),
+        "recording_method": source.get("recordingMethod") or source.get("recording_method"),
+        "application_package": application.get("packageName") or application.get("package_name") or source.get("packageName") or source.get("package_name"),
+        "device_display_name": device.get("displayName") or device.get("display_name") or source.get("deviceDisplayName") or source.get("device_display_name"),
+        "device_form_factor": device.get("formFactor") or device.get("form_factor") or source.get("deviceFormFactor") or source.get("device_form_factor"),
+    }
+    result: dict[str, str] = {}
+    for key, value in values.items():
+        text = _source_text(value)
+        if text:
+            result[key] = text[:160]
+    return result or None
+
+
+def _source_recording_kind(source_or_session: Mapping[str, Any] | None) -> str | None:
+    """Classify Google Health's active/passive recording method."""
+
+    if not isinstance(source_or_session, Mapping):
+        return None
+    source = source_or_session
+    if "recording_method" not in source and "recordingMethod" not in source:
+        source = _session_source_mapping(source_or_session) or {}
+    method = _source_text(source.get("recording_method") or source.get("recordingMethod"))
+    if method is None:
+        return None
+    normalized = method.upper().replace("-", "_").replace(" ", "_")
+    if "PASSIVE" in normalized:
+        return "passive"
+    if "ACTIVE" in normalized:
+        return "active"
+    return None
+
+
+def _session_source_kind(session: Mapping[str, Any] | None) -> str | None:
+    """Classify a normalized exercise's provider recording method."""
+
+    return _source_recording_kind(session)
+
+
+def _session_interval(session: Mapping[str, Any]) -> tuple[datetime, datetime] | None:
+    started = session.get("started_at")
+    if isinstance(started, datetime):
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        start = started.astimezone(timezone.utc)
+    else:
+        start = _parse_timestamp(started)
+    if start is None:
+        return None
+    ended = session.get("ended_at")
+    if isinstance(ended, datetime):
+        if ended.tzinfo is None:
+            ended = ended.replace(tzinfo=timezone.utc)
+        end = ended.astimezone(timezone.utc)
+    else:
+        end = _parse_timestamp(ended)
+    duration = session.get("duration_seconds")
+    if duration is None:
+        duration = session.get("elapsed_seconds")
+    try:
+        duration_value = float(duration) if duration is not None else None
+    except (TypeError, ValueError):
+        duration_value = None
+    if duration_value is not None and (not math.isfinite(duration_value) or duration_value <= 0):
+        duration_value = None
+    if end is None and duration_value is not None:
+        end = start + timedelta(seconds=duration_value)
+    if end is None or end <= start:
+        return None
+    return start, end
+
+
+def _sessions_are_passive_active_duplicate(
+    first: Mapping[str, Any],
+    second: Mapping[str, Any],
+    *,
+    start_tolerance_seconds: float = 120.0,
+    overlap_ratio: float = 0.90,
+) -> bool:
+    """Return true only for active/passive records covering one workout.
+
+    This intentionally does not compare calendar dates or distance.  A phone
+    auto-detection can contain a watch workout and report a materially
+    different distance.  When the passive interval is the shorter one, it
+    must be at least 90% contained by the active interval (with a 120-second
+    boundary tolerance).  When it is the longer one, both boundaries must be
+    close and at least 90% of that longer interval must overlap.  The latter
+    rule keeps a broad passive container from hiding an unrelated workout.
+    """
+
+    first_kind = _session_source_kind(first)
+    second_kind = _session_source_kind(second)
+    if {first_kind, second_kind} != {"active", "passive"}:
+        return False
+    first_interval = _session_interval(first)
+    second_interval = _session_interval(second)
+    if first_interval is None or second_interval is None:
+        return False
+    first_start, first_end = first_interval
+    second_start, second_end = second_interval
+    overlap = (min(first_end, second_end) - max(first_start, second_start)).total_seconds()
+    if overlap <= 0:
+        return False
+    passive_start, passive_end = (
+        (first_start, first_end) if first_kind == "passive" else (second_start, second_end)
+    )
+    active_start, active_end = (
+        (first_start, first_end) if first_kind == "active" else (second_start, second_end)
+    )
+    passive_duration = (passive_end - passive_start).total_seconds()
+    active_duration = (active_end - active_start).total_seconds()
+    if passive_duration <= active_duration:
+        # A passive child/phone auto-detection that sits inside a measured
+        # watch run is redundant even when its distance differs.
+        contained = (
+            passive_start >= active_start - timedelta(seconds=start_tolerance_seconds)
+            and passive_end <= active_end + timedelta(seconds=start_tolerance_seconds)
+        )
+        return contained and overlap >= passive_duration * overlap_ratio
+
+    # A passive interval that is longer than the active workout is only a
+    # duplicate when it has nearly identical boundaries.  Do not collapse a
+    # long phone auto-detection around multiple separate watch workouts.
+    near_boundaries = (
+        abs((passive_start - active_start).total_seconds()) <= start_tolerance_seconds
+        and abs((passive_end - active_end).total_seconds()) <= start_tolerance_seconds
+    )
+    return near_boundaries and overlap >= passive_duration * overlap_ratio
+
+
 def _session_identity(session: Mapping[str, Any]) -> str:
     """Return the stable provider identity used to merge overlapping pages."""
 

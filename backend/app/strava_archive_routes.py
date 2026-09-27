@@ -600,7 +600,8 @@ def _candidate_matches(
     source_id: str,
     strava_links: Mapping[int, set[str]],
 ) -> list[Run]:
-    candidates = db.scalars(select(Run).where(Run.owner_id == owner_id, Run.source != STRAVA_SOURCE)).all()
+    from .run_visibility import visible_run_clause
+    candidates = db.scalars(select(Run).where(Run.owner_id == owner_id, Run.source != STRAVA_SOURCE, visible_run_clause())).all()
     matched: list[Run] = []
     for run in candidates:
         # A provider identity already linked to another activity is a hard

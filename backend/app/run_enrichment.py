@@ -113,11 +113,12 @@ def enrich_run(db: Session, run: Run, *, provider_active_seconds: float | None =
 
     shoe_changed = False
     if run.shoe_assignment != "manual":
+        from .run_visibility import visible_run_clause
         shoes = list(db.scalars(select(Shoe).where(Shoe.owner_id == run.owner_id)).all())
         rows = db.execute(select(Run.shoe_id, func.sum(Run.distance_km)).where(
             Run.owner_id == run.owner_id, Run.id != run.id,
             Run.started_at < run.started_at, Run.shoe_id.is_not(None),
-            ~func.lower(Run.source).contains("demo"), ~func.lower(Run.source).contains("sample"),
+            visible_run_clause(),
         ).group_by(Run.shoe_id)).all()
         mileage = {int(shoe_id): float(total) for shoe_id, total in rows}
         started = run.started_at.replace(tzinfo=timezone.utc) if run.started_at.tzinfo is None else run.started_at

@@ -3,7 +3,8 @@
     "eyebrow": "跑步状态",
     "title": "训练状态估计",
     "score": "分",
-    "effortEstimate": "训练努力估计",
+    "effortEstimate": "训练 VDOT 估值",
+    "missingWorkSegments": "需要有效快段数据才能估算这次间歇跑的 VDOT。",
     "raceVdot": "比赛 VDOT 估计",
     "loading": "正在估计训练状态…",
     "unavailable": "暂时无法获取估计结果。",
@@ -22,7 +23,7 @@
     "methodGeneral": "训练代理",
     "heatPenalty": "高温 +{value}%",
     "ascentPenalty": "爬升 +{value}%",
-    "trainingNote": "这是训练跑的努力估计，不是比赛 VDOT。",
+    "trainingNote": "按配速与训练类型的强度区间估算，存在个体差异。",
     "raceNote": "根据比赛或计时测试强度估计 VDOT。"
   }
 }

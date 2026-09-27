@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from app.fitness import MAX_ASCENT_TIME_PENALTY, MAX_HEAT_TIME_PENALTY, compute_fitness
+import pytest
+
+from app.fitness import (
+    MAX_ASCENT_TIME_PENALTY,
+    MAX_HEAT_TIME_PENALTY,
+    _raw_vdot,
+    _vdot,
+    compute_fitness,
+    equivalent_time_for_vdot,
+)
 
 
 def _run(**overrides):
@@ -100,6 +109,9 @@ def test_interval_average_is_reported_without_becoming_prediction_evidence():
     assert result["score"] is not None
     assert "interval" in result["method"]
     assert result["factors"]["interval_average_not_performance"] is True
+    assert result["factors"]["score_kind"] == "interval_average_only"
+    assert result["factors"]["equivalent_vdot"] is None
+    assert result["factors"]["equivalent_race_duration_seconds"] is None
     assert result["factors"]["prediction_eligible"] is False
 
 
@@ -122,3 +134,74 @@ def test_invalid_input_returns_insufficient_without_fabrication():
             "reason": "distance_missing_or_too_short",
         },
     }
+
+
+def test_training_vdot_uses_type_intensity_and_is_length_invariant_for_same_pace():
+    easy_5k = compute_fitness(
+        _run(distance_km=5.0, duration_seconds=1_500, run_type="easy", title="Easy"),
+        _weather(),
+        {},
+    )
+    easy_10k = compute_fitness(
+        _run(distance_km=10.0, duration_seconds=3_000, run_type="easy", title="Easy"),
+        _weather(),
+        {},
+    )
+    race = compute_fitness(_run(), _weather(), {})
+
+    assert easy_5k["factors"]["training_intensity_assumption"] == "easy"
+    assert easy_5k["factors"]["training_intensity_basis"] == "fraction_of_pace_oxygen_cost"
+    assert easy_5k["factors"]["training_intensity_fraction_low"] == 0.65
+    assert easy_5k["factors"]["training_intensity_fraction_high"] == 0.79
+    assert easy_5k["score"] == pytest.approx(easy_10k["score"], abs=0.02)
+    # The easy pace is not silently displayed as an all-out race result.
+    assert easy_5k["score"] < race["score"]
+    assert easy_5k["factors"]["equivalent_race_duration_seconds"] < easy_5k["factors"]["observed_duration_seconds"]
+    assert easy_5k["factors"]["equivalent_race_duration_low_seconds"] < easy_5k["factors"]["equivalent_race_duration_high_seconds"]
+
+
+def test_equivalent_time_is_the_inverse_of_vdot():
+    for distance_km, score in ((5.0, 20.0), (5.0, 40.0), (10.0, 45.0), (21.0975, 37.5), (5.0, 90.0)):
+        seconds = equivalent_time_for_vdot(score, distance_km)
+        assert seconds is not None
+        assert _raw_vdot(distance_km, seconds) == pytest.approx(score, abs=1e-8)
+        assert _vdot(distance_km, seconds) == pytest.approx(score, abs=1e-8)
+
+
+def test_interval_vdot_uses_sustained_work_segments_and_excludes_recovery():
+    result = compute_fitness(
+        _run(run_type="interval", title="4 x 1 km", distance_km=6.0, duration_seconds=2_400),
+        _weather(),
+        {
+            "intervals": [
+                {"distance_m": 1_000, "moving_seconds": 270, "label": "moving"},
+                {"distance_m": 500, "moving_seconds": 180, "label": "recovery"},
+                {"distance_m": 1_000, "moving_seconds": 268, "label": "moving"},
+                {"distance_m": 500, "moving_seconds": 180, "label": "walking recovery"},
+                {"distance_m": 1_000, "moving_seconds": 272, "label": "moving"},
+                {"distance_m": 500, "moving_seconds": 180, "label": "rest"},
+                {"distance_m": 1_000, "moving_seconds": 269, "label": "moving"},
+            ]
+        },
+    )
+
+    factors = result["factors"]
+    assert result["method"].startswith("vdot_interval_sustained_segments")
+    assert factors["interval_work_segments_available"] is True
+    assert factors["interval_work_distance_km"] == 4.0
+    assert factors["interval_work_duration_seconds"] == 1_079.0
+    assert factors["effort_source"] == "intervals"
+    assert factors["prediction_duration_seconds"] is not None
+    assert factors["prediction_duration_seconds"] < factors["observed_duration_seconds"]
+
+
+def test_race_keeps_elapsed_time_when_provider_moving_time_is_present():
+    result = compute_fitness(
+        _run(moving_seconds=1_080, duration_seconds=1_200),
+        _weather(),
+        {"moving_time_source": "provider_reported", "provider_active_seconds": 1_080},
+    )
+
+    assert result["factors"]["duration_source"] == "elapsed"
+    assert result["factors"]["observed_duration_seconds"] == 1_200.0
+    assert result["factors"]["duration_provenance"]["provider_active_seconds"] == 1_080.0

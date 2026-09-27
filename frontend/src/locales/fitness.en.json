@@ -3,7 +3,8 @@
     "eyebrow": "RUN FITNESS",
     "title": "Training fitness estimate",
     "score": "score",
-    "effortEstimate": "Training effort estimate",
+    "effortEstimate": "Training VDOT estimate",
+    "missingWorkSegments": "Usable work intervals are needed to estimate VDOT for this run.",
     "raceVdot": "Race VDOT estimate",
     "loading": "Estimating training fitness…",
     "unavailable": "This estimate is temporarily unavailable.",
@@ -22,7 +23,7 @@
     "methodGeneral": "Training proxy",
     "heatPenalty": "+{value}% heat",
     "ascentPenalty": "+{value}% ascent",
-    "trainingNote": "An effort estimate for a training run, not a race VDOT.",
+    "trainingNote": "Estimated from pace and a type-specific intensity range; training effort is uncertain.",
     "raceNote": "A VDOT estimate based on a race or time-trial effort."
   }
 }

@@ -22,6 +22,16 @@ export type TrainingPrediction = {
   /** Backends may return a numeric fraction/percentage or a qualitative level. */
   confidence: number | string
   reference_run_id: RunId | null
+  equivalent_vdot?: number | null
+  evidence_kind?: string
+  evidence_count?: number
+  reference_age_days?: number
+  equivalent_times?: Array<{ distance_km: number; seconds: number }>
+  recent_run_estimates?: Array<{
+    run_id: RunId; run_type: string; pace_seconds_per_km: number | null
+    equivalent_vdot: number | null; equivalent_seconds: number | null
+    confidence: string; used_in_prediction: boolean
+  }>
 }
 
 export type TrainingSession = {

@@ -570,13 +570,18 @@ function PredictionCard({ prediction, runs, locale, t, onSelectRun }: { predicti
   const referenceRun = prediction.reference_run_id == null ? null : runs.find((run) => String(run.id) === String(prediction.reference_run_id))
   const low = Math.min(prediction.low_seconds, prediction.high_seconds)
   const high = Math.max(prediction.low_seconds, prediction.high_seconds)
+  const basis = prediction.evidence_kind === 'race' ? 'training.basisRace' : prediction.evidence_kind === 'tempo' ? 'training.basisTempo' : 'training.basisTraining'
+  const typeName = (value: string) => t(`types.${value}`)
   return (
     <article className="card training-prediction-card">
       <div className="training-card-heading"><div><span className="section-eyebrow">{t('training.predictionEyebrow')}</span><h3>{t('training.predictionTitle')}</h3></div><span className="training-confidence">{confidenceLabel(prediction.confidence, t)}</span></div>
+      {prediction.equivalent_vdot != null && <div className="training-vdot"><div><span>{t('training.vdotLabel')}</span><strong>{prediction.equivalent_vdot.toFixed(1)}</strong></div><p>{t(basis)}<small>{t('training.evidenceCount', { count: prediction.evidence_count ?? 1 })}</small></p></div>}
       <div className="training-prediction-time"><span>{t('training.predictionTime')}</span><strong>{formatTime(prediction.seconds)}</strong></div>
       <div className="training-prediction-range"><span>{t('training.predictionRange', { low: formatTime(low), high: formatTime(high) })}</span><div className="training-range-track"><span style={{ left: `${Math.max(4, Math.min(92, confidence))}%` }} /></div></div>
       <p className="training-caution">{t('training.predictionCaution', { confidence: confidenceLabel(prediction.confidence, t) })}</p>
-      <div className="training-prediction-meta"><span>{t('training.predictionMethod', { method: prediction.method || '—' })}</span>{referenceRun && <button className="text-button" type="button" onClick={() => onSelectRun(referenceRun)}>{t('training.referenceRun', { run: referenceRun.title || formatDate(referenceRun.started_at, locale) })}</button>}</div>
+      {!!prediction.equivalent_times?.length && <div className="training-equivalents" aria-label={t('training.equivalentTimes')}>{prediction.equivalent_times.map((item) => <div key={item.distance_km}><span>{item.distance_km > 40 ? t('training.marathon') : item.distance_km > 20 ? t('training.halfMarathon') : `${item.distance_km} km`}</span><strong>{formatTime(item.seconds)}</strong></div>)}</div>}
+      <div className="training-prediction-meta"><span>{t('training.conditionNote')}</span>{referenceRun && <button className="text-button" type="button" onClick={() => onSelectRun(referenceRun)}>{t('training.referenceRun', { run: formatDate(referenceRun.started_at, locale) })}</button>}</div>
+      {!!prediction.recent_run_estimates?.length && <details className="training-evidence"><summary>{t('training.recentEvidence')}</summary><div className="training-evidence-scroll"><table><thead><tr><th>{t('training.evidenceRun')}</th><th>{t('training.evidencePace')}</th><th>VDOT</th><th>{t('training.evidenceTime')}</th></tr></thead><tbody>{prediction.recent_run_estimates.map((item) => { const run = runs.find((candidate) => String(candidate.id) === String(item.run_id)); return <tr key={item.run_id}><td>{run ? <button className="text-button" type="button" onClick={() => onSelectRun(run)}>{formatDate(run.started_at, locale)}<small>{typeName(item.run_type)}{item.used_in_prediction ? ` · ${t('training.evidenceUsed')}` : ''}</small></button> : typeName(item.run_type)}</td><td>{formatPace(item.pace_seconds_per_km)}</td><td>{item.equivalent_vdot?.toFixed(1) ?? '—'}</td><td>{item.equivalent_seconds == null ? '—' : formatTime(item.equivalent_seconds)}</td></tr> })}</tbody></table></div><p>{t('training.trainingEstimateNote')}</p></details>}
     </article>
   )
 }

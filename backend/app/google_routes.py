@@ -29,6 +29,12 @@ from .auth import (
 )
 from .config import Settings
 from .db import GoogleConnection, OAuthState, Run, RunStream, get_db
+from .google_health import (
+    _session_source_kind,
+    _session_source_metadata,
+    _sessions_are_passive_active_duplicate,
+)
+from .run_visibility import EXCLUDED_GOOGLE_SOURCE
 from .schemas import GoogleDataInspection, GoogleSyncRequest
 from .token_crypto import decrypt_secret, encrypt_secret
 
@@ -759,9 +765,12 @@ def _persist_google_stream(db: Session, owner_id: str, run: Run, session: dict[s
         stream = RunStream(owner_id=owner_id, run_id=run.id, created_at=datetime.now(timezone.utc))
         db.add(stream)
     else:
-        for key in ("weather", "official_race_distance_km"):
-            if key in (stream.analysis or {}):
-                analysis[key] = stream.analysis[key]
+        # Re-importing provider telemetry must not discard user-attached
+        # metadata (weather, official race distance, or cross-provider links).
+        # Newly computed analysis keys below intentionally win when they are
+        # derived from the replacement stream.
+        previous_analysis = stream.analysis if isinstance(stream.analysis, dict) else {}
+        analysis = {**previous_analysis, **analysis}
     stream.payload_gzip = compressed
     stream.sample_count = len(points)
     stream.raw_bytes = len(raw)
@@ -770,6 +779,12 @@ def _persist_google_stream(db: Session, owner_id: str, run: Run, session: dict[s
     analysis["provider_active_seconds"] = session.get("active_duration_seconds")
     analysis["provider_exercise_events"] = session.get("exercise_events", [])
     analysis["provider_metrics_summary"] = session.get("metrics_summary", {})
+    source_metadata = _session_source_metadata(session)
+    if source_metadata:
+        analysis["provider_data_source"] = source_metadata
+    activity_type = session.get("activity_type")
+    if isinstance(activity_type, str) and activity_type.strip():
+        analysis["provider_activity_type"] = activity_type.strip()[:80]
     route = _route_for_session(session, result.get("routes", []))
     if isinstance(route, dict) and route.get("coarse"):
         analysis["telemetry_quality"] = route.get("quality", {})
@@ -783,6 +798,110 @@ def _persist_google_stream(db: Session, owner_id: str, run: Run, session: dict[s
     return True
 
 
+def _stored_google_source_kind(stream: RunStream | None) -> str | None:
+    if stream is None or not isinstance(stream.analysis, dict):
+        return None
+    metadata = stream.analysis.get("provider_data_source")
+    return _session_source_kind(metadata if isinstance(metadata, dict) else None)
+
+
+def _stored_google_source_metadata(stream: RunStream | None) -> dict[str, Any]:
+    if stream is None or not isinstance(stream.analysis, dict):
+        return {}
+    metadata = stream.analysis.get("provider_data_source")
+    result = dict(metadata) if isinstance(metadata, dict) else {}
+    activity_type = stream.analysis.get("provider_activity_type")
+    if isinstance(activity_type, str) and activity_type.strip():
+        result["activity_type"] = activity_type.strip()
+    return result
+
+
+def _stored_google_run_is_running(stream: RunStream | None) -> bool:
+    """Reject a stale/non-running source descriptor as a merge candidate."""
+
+    activity_type = _stored_google_source_metadata(stream).get("activity_type")
+    if not isinstance(activity_type, str) or not activity_type.strip():
+        # The row was already imported into the run table, so absent provider
+        # type metadata remains compatible with historical Google rows.
+        return True
+    normalized = activity_type.strip().upper().replace("-", "_")
+    if normalized in {"WORKOUT", "EXERCISE", "UNKNOWN"}:
+        # Generic/custom Google exercises can still be running activities
+        # when the attached TCX route identified the sport at import time.
+        return True
+    return any(token in normalized for token in ("RUN", "JOG", "TREADMILL"))
+
+
+def _find_google_source_duplicate(
+    db: Session,
+    owner_id: str,
+    payload: dict[str, Any],
+    session: dict[str, Any],
+    *,
+    dedupe_key: str,
+) -> Run | None:
+    """Find one active/passive provider duplicate without date-only matching.
+
+    Google Health can expose one workout from an actively measured watch and
+    a passively measured phone auto-detection, each with a different source
+    ID.  Only a source descriptor plus substantial interval overlap qualifies;
+    same-day, same-distance, and active-vs-active records stay independent.
+    """
+
+    current_kind = _session_source_kind(session)
+    if current_kind not in {"active", "passive"}:
+        return None
+    interval = {
+        "started_at": payload.get("started_at"),
+        "duration_seconds": payload.get("duration_seconds"),
+    }
+    from .google_health import _session_interval
+
+    current_interval = _session_interval(interval)
+    if current_interval is None:
+        return None
+    start, end = current_interval
+    candidates = db.scalars(
+        select(Run).where(
+            Run.owner_id == owner_id,
+            Run.source == "google_health",
+            Run.dedupe_key != dedupe_key,
+            # A passive phone container may begin well before a measured
+            # child workout. The bounded lookback avoids a full owner scan;
+            # interval containment below remains the identity check.
+            Run.started_at >= start - timedelta(hours=24),
+            Run.started_at <= end + timedelta(seconds=120),
+        )
+    ).all()
+    matches: list[Run] = []
+    for candidate in candidates:
+        if candidate.source == EXCLUDED_GOOGLE_SOURCE:
+            continue
+        stream = db.scalar(
+            select(RunStream).where(
+                RunStream.owner_id == owner_id,
+                RunStream.run_id == candidate.id,
+            )
+        )
+        candidate_kind = _stored_google_source_kind(stream)
+        if candidate_kind not in {"active", "passive"} or candidate_kind == current_kind:
+            continue
+        if candidate_kind == "active" and not _stored_google_run_is_running(stream):
+            continue
+        candidate_metadata = _stored_google_source_metadata(stream)
+        candidate_mapping = {
+            "started_at": candidate.started_at,
+            "duration_seconds": candidate.duration_seconds,
+            "recording_method": candidate_metadata.get("recording_method"),
+            "activity_type": candidate_metadata.get("activity_type"),
+        }
+        if _sessions_are_passive_active_duplicate(session, candidate_mapping):
+            matches.append(candidate)
+    # A source can legitimately have several overlapping records.  Refuse to
+    # guess which one is the parent when identity evidence is ambiguous.
+    return matches[0] if len(matches) == 1 else None
+
+
 def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], connection: GoogleConnection) -> tuple[int, int, int]:
     # Importing the canonical key helper avoids accidentally creating a key
     # whose owner prefix differs from normal/manual/CSV writes.
@@ -793,9 +912,33 @@ def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], con
     skipped = 0
     stream_errors = 0
     raw_example: dict[str, Any] | None = None
-    for session in result.get("sessions", []):
-        if not isinstance(session, dict):
-            continue
+    sessions = [session for session in result.get("sessions", []) if isinstance(session, dict)]
+    # Source identity is useful even when neither recording has a GPS stream.
+    # Only accepted running sessions may suppress a passive detection.
+    active_running_sessions = [
+        item for item in sessions
+        if _session_source_kind(item) == "active"
+        and _session_to_run(item, _route_for_session(item, result.get("routes", []))) is not None
+    ]
+    # Persist actively measured watch records first.  If a single response
+    # contains both records for one workout, the passive phone record then
+    # sees the active row and is suppressed without changing the provider ID.
+    sessions.sort(
+        key=lambda session: {
+            "active": 0,
+            None: 1,
+            "passive": 2,
+        }.get(_session_source_kind(session), 1)
+    )
+    for session in sessions:
+        if _session_source_kind(session) == "passive":
+            matches = [item for item in active_running_sessions if _sessions_are_passive_active_duplicate(session, item)]
+            if len(matches) == 1:
+                canonical = _session_to_run(matches[0], _route_for_session(matches[0], result.get("routes", [])))
+                canonical_key = _dedupe_key("google_health", canonical["source_id"], owner_id=owner_id)
+                if db.scalar(select(Run.id).where(Run.owner_id == owner_id, Run.dedupe_key == canonical_key, Run.source == "google_health")) is not None:
+                    skipped += 1
+                    continue
         route = _route_for_session(session, result.get("routes", []))
         payload = _session_to_run(session, route)
         if payload is None:
@@ -815,6 +958,11 @@ def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], con
             skipped += 1
             existing_run = db.get(Run, existing)
             if existing_run is not None:
+                if existing_run.source == EXCLUDED_GOOGLE_SOURCE:
+                    # A reversible quarantine must remain untouched by a
+                    # later provider re-import.  Keep its identity key so an
+                    # operator can restore it without losing provenance.
+                    continue
                 # Refresh provider metrics without replacing user labels,
                 # notes, or shoe locks. Broad old summaries may be incomplete.
                 existing_run.distance_km = payload["distance_km"]
@@ -831,6 +979,49 @@ def _persist_sync_result(db: Session, owner_id: str, result: dict[str, Any], con
                 except Exception:
                     stream_errors += 1
             continue
+
+        duplicate = _find_google_source_duplicate(
+            db,
+            owner_id,
+            payload,
+            session,
+            dedupe_key=key,
+        )
+        if duplicate is not None:
+            duplicate_kind = _stored_google_source_kind(duplicate.stream)
+            current_kind = _session_source_kind(session)
+            if current_kind == "passive" and duplicate_kind == "active":
+                skipped += 1
+                continue
+            if current_kind == "active" and duplicate_kind == "passive":
+                # Keep one user-editable row but promote its provider identity
+                # to the measured source.  Manual run type/shoe/notes remain
+                # untouched; the old passive source ID is not retained as a
+                # second dedupe identity.
+                duplicate.source_id = payload["source_id"]
+                duplicate.dedupe_key = key
+                duplicate.started_at = payload["started_at"]
+                duplicate.distance_km = payload["distance_km"]
+                duplicate.duration_seconds = payload["duration_seconds"]
+                duplicate.avg_hr = payload["avg_hr"]
+                duplicate.source_utc_offset_seconds = payload.get("source_utc_offset_seconds")
+                if not duplicate.stream_available:
+                    duplicate.moving_seconds = payload.get("moving_seconds")
+                skipped += 1
+                try:
+                    has_route = route is not None and bool(route.get("points"))
+                    if has_route and not _persist_google_stream(db, owner_id, duplicate, session, result):
+                        stream_errors += 1
+                    if duplicate.stream is not None:
+                        duplicate.stream.analysis = {
+                            **(duplicate.stream.analysis or {}),
+                            "provider_data_source": _session_source_metadata(session) or {},
+                            "provider_activity_type": session.get("activity_type"),
+                        }
+                    enrich_run(db, duplicate, provider_active_seconds=session.get("active_duration_seconds"))
+                except Exception:
+                    stream_errors += 1
+                continue
         try:
             from .schemas import RunCreate
 
